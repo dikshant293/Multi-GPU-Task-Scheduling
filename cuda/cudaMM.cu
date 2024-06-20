@@ -468,7 +468,7 @@ int main(int argc, char **argv)
 
             cudaSetDevice (d);
 
-            // multiply_kernel<<<numBlocks,threadsPerBlock>>>(d_a,d_b,d_c,start,M,N,K);
+            multiply_kernel<<<numBlocks,threadsPerBlock>>>(d_a,d_b,d_c,start,M,N,K);
             
             success[i] = 1;
 
