@@ -76,7 +76,7 @@ gpu_scheduler_dynamic_mqlb(unsigned long **gpuLoad, int ngpus, int taskID, int t
 {  
   int queueID = (taskID*numQueues)/numTasks;
   int ngpusPerQueue = ngpus/numQueues;
-  return gpu_scheduler_dynamic_lb(gpuLoad, queueID*ngpusPerQueue, ngpusPerQueue, taskWeight);
+  return gpu_scheduler_dynamic_lb(*gpuLoad, queueID*ngpusPerQueue, ngpusPerQueue, taskWeight);
 }
 
 
