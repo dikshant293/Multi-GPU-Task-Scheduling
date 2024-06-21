@@ -163,7 +163,7 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int rowStart, int 
 {
     int i = blockIdx.y * blockDim.y + threadIdx.y;
     int j = blockIdx.x * blockDim.x + threadIdx.x;
-    i += rowStart;
+    // i += rowStart;
     if(i < M and j < N)
     {
         float sum = 0.0;
@@ -349,38 +349,38 @@ int main(int argc, char **argv)
         return temp;
     };
 
-    float *(*dev_pointers)[3];
-    dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
+    // float *(*dev_pointers)[3];
+    // dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
 
     std::vector<std::thread> threads;
 
-    start_timer();
+    // start_timer();
 
-    for(int d=0;d<ndevs;d++){
-        threads.push_back(std::thread([&, d]()
-        {
-            float **d_a = &dev_pointers[d][0];
-            float **d_b = &dev_pointers[d][1];
-            float **d_c = &dev_pointers[d][2];
+    // for(int d=0;d<ndevs;d++){
+    //     threads.push_back(std::thread([&, d]()
+    //     {
+    //         // float **d_a = &dev_pointers[d][0];
+    //         float **d_b = &dev_pointers[d][1];
+    //         // float **d_c = &dev_pointers[d][2];
 
-            cudaSetDevice(d);
-            cudaMalloc(d_a,a_size*sizeof(float));
-            cudaMalloc(d_b,b_size*sizeof(float));
-            cudaMalloc(d_c,c_size*sizeof(float));
+    //         cudaSetDevice(d);
+    //         // cudaMallocAsync(d_a,a_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
+    //         cudaMallocAsync(d_b,b_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
+    //         // cudaMallocAsync(d_c,c_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
 
-            cudaMemcpyAsync(*d_a,a,a_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
-            cudaMemcpyAsync(*d_b,b,b_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
-            cudaMemcpyAsync(*d_c,c,c_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
+    //         // cudaMemcpyAsync(*d_a,a,a_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
+    //         cudaMemcpyAsync(*d_b,b,b_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
+    //         // cudaMemcpyAsync(*d_c,c,c_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
             
-            cudaDeviceSynchronize();
-        }));
-    }
+    //         cudaDeviceSynchronize();
+    //     }));
+    // }
 
-    for (auto &thread: threads)
-        thread.join();
-    threads.clear();
+    // for (auto &thread: threads)
+    //     thread.join();
+    // threads.clear();
 
-    end_timer("host to device copy");
+    // end_timer("host to device copy");
 
     start_timer();
     for (int i = 0; i < numTasks; i++)
@@ -410,22 +410,45 @@ int main(int argc, char **argv)
             int nRows = end-start;
 
             int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-            printf("dev %d [%d] (%d,%d)\n",d,i,start,end);
 
-            float **d_a = &dev_pointers[d][0];
-            float **d_b = &dev_pointers[d][1];
-            float **d_c = &dev_pointers[d][2];
+            // float **d_a = &dev_pointers[d][0];
+            // float **d_b = &dev_pointers[d][1];
+            // float **d_c = &dev_pointers[d][2];
 
             devices[d]++;
 
             // Launch kernel for mative GPU matrix multiplication
-            dim3 blocksPerGrid((N+min(MAX_TPB,N)-1)/min(MAX_TPB,N), (nRows+min(MAX_TPB,nRows)-1)/min(MAX_TPB,nRows));
-            dim3 threadsPerBlock(min(MAX_TPB,N), min(MAX_TPB,nRows)); // Assuming width and height are within max threads per block limit 
+            int nxt = nxt_strm(strm_ctr[d]);
+            printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
+            
             cudaSetDevice (d);
-            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,streams[d][nxt_strm(strm_ctr[d])]>>>(*d_a,*d_b,*d_c,start,M,N,K);
-            // cudaDeviceSynchronize();
-            success[i] = 1;
+            auto stream = streams[d][nxt];
+            float *d_a, *d_b, *d_c;
+            int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
+            
+            m=nRows; n=N; k=K;
+            a_start = start*K; b_start = 0;   c_start = start*N;
+            a_items = nRows*K; b_items = K*N; c_items = nRows*N;
+            
+            cudaMallocAsync(&d_a,a_items*sizeof(float),stream);
+            cudaMallocAsync(&d_b,b_items*sizeof(float),stream);
+            cudaMallocAsync(&d_c,c_items*sizeof(float),stream);
+            
+            cudaMemcpyAsync(d_a,a+a_start,a_items*sizeof(float),cudaMemcpyHostToDevice,stream);
+            cudaMemcpyAsync(d_b,b+b_start,b_items*sizeof(float),cudaMemcpyHostToDevice,stream);
+            cudaMemcpyAsync(d_c,c+c_start,c_items*sizeof(float),cudaMemcpyHostToDevice,stream);
+            
+            dim3 blocksPerGrid((n+min(MAX_TPB,n)-1)/min(MAX_TPB,n), (m+min(MAX_TPB,m)-1)/min(MAX_TPB,m));
+            dim3 threadsPerBlock(min(MAX_TPB,n), min(MAX_TPB,m)); // Assuming width and height are within max threads per block limit 
+            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b,d_c,start,m,n,k);
+            
+            cudaMemcpyAsync(c+c_start,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost,stream);
 
+            cudaFreeAsync(d_a,stream);
+            cudaFreeAsync(d_b,stream);
+            cudaFreeAsync(d_c,stream);
+            
+            success[i] = 1;
         }));
     }
 
@@ -436,22 +459,22 @@ int main(int argc, char **argv)
     for(int d=0;d<ndevs;d++)
         cudaDeviceSynchronize();
 
-    end_timer("multiplication");
+    end_timer("GPU multiplication");
 
-    start_timer();
+    // start_timer();
     
-    for (int i = 0; i < numTasks; i++){
-        int d = chosen[i];
+    // for (int i = 0; i < numTasks; i++){
+    //     int d = chosen[i];
 
-        int start = i*rowsPerTask*N, end = MIN((i+1)*rowsPerTask,M)*N;
-        int items = (end-start);
-        float **d_c = &dev_pointers[d][2];
-        cudaMemcpyAsync(c+start,*d_c+start,items*sizeof(float),cudaMemcpyDeviceToHost,streams[d][nxt_strm(strm_ctr[d])]);
-    }
+    //     int start = i*rowsPerTask*N, end = MIN((i+1)*rowsPerTask,M)*N;
+    //     int items = (end-start);
+    //     float **d_c = &dev_pointers[d][2];
+    //     cudaMemcpyAsync(c+start,*d_c+start,items*sizeof(float),cudaMemcpyDeviceToHost,streams[d][nxt_strm(strm_ctr[d])]);
+    // }
     
-    for(int d=0;d<ndevs;d++)
-        cudaDeviceSynchronize();
-    end_timer("device to host");
+    // for(int d=0;d<ndevs;d++)
+    //     cudaDeviceSynchronize();
+    // end_timer("device to host");
 
     if(check_result){
         printf("GPU Done... now checking correctness\n");
@@ -475,7 +498,7 @@ int main(int argc, char **argv)
                 {
                     printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
                     flag = false;
-                    break;
+                    // break;
                 }
             }
             if (!flag)
@@ -487,26 +510,26 @@ int main(int argc, char **argv)
     // printf("Sleeping\n");
     // std::this_thread::sleep_for(std::chrono::seconds(5));
     
-    for(int d=0;d<ndevs;d++){
-        threads.push_back(std::thread([&, d]()
-        {
-            float **d_a = &dev_pointers[d][0];
-            float **d_b = &dev_pointers[d][1];
-            float **d_c = &dev_pointers[d][2];
+    // for(int d=0;d<ndevs;d++){
+    //     threads.push_back(std::thread([&, d]()
+    //     {
+    //         // float **d_a = &dev_pointers[d][0];
+    //         float **d_b = &dev_pointers[d][1];
+    //         // float **d_c = &dev_pointers[d][2];
 
-            cudaSetDevice(d);
-            cudaFreeAsync(d_a,streams[d][nxt_strm(strm_ctr[d])]);
-            cudaFreeAsync(d_b,streams[d][nxt_strm(strm_ctr[d])]);
-            cudaFreeAsync(d_c,streams[d][nxt_strm(strm_ctr[d])]);
+    //         cudaSetDevice(d);
+    //         // cudaFreeAsync(d_a,streams[d][nxt_strm(strm_ctr[d])]);
+    //         cudaFreeAsync(d_b,streams[d][nxt_strm(strm_ctr[d])]);
+    //         // cudaFreeAsync(d_c,streams[d][nxt_strm(strm_ctr[d])]);
 
-            cudaDeviceSynchronize();
-        }));
-    }
+    //         cudaDeviceSynchronize();
+    //     }));
+    // }
 
-    for(auto &thread: threads)
-        thread.join();
-    threads.clear();
-    
+    // for(auto &thread: threads)
+    //     thread.join();
+    // threads.clear();
+    // printMatrix(c,M,N);
     cudaFreeHost(a);
     cudaFreeHost(b);
     cudaFreeHost(c);
