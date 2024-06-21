@@ -308,12 +308,11 @@ int main(int argc, char **argv)
     printf("syn with wait\n");
     #endif
 
-    float *a,*b,*c,*c_cpu;
+    float *a,*b,*c;
 
     cudaMallocHost(&a,a_size*sizeof(float));
     cudaMallocHost(&b,b_size*sizeof(float));
     cudaMallocHost(&c,c_size*sizeof(float));
-    cudaMallocHost(&c_cpu,c_size*sizeof(float));
 
     int *taskWork = (int *)malloc(sizeof(int) * numTasks);
 
@@ -323,20 +322,17 @@ int main(int argc, char **argv)
     // initialize
 
     for (int i = 0; i < a_size; i++)
-        a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        // a[i] = i;
+        // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
+        a[i] = 1.0;
 
     for (int i = 0; i < b_size; i++)
-        b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        // b[i] = i+400;
+        // b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
+        b[i] = 2.0;
 
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
 
-    for (int i = 0; i < c_size; i++)
-        c_cpu[i] = 0.0;
-
-    // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
+    // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);
     int streams_per_gpu = 4;
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
     for(int d=0;d<ndevs;d++){
@@ -372,10 +368,6 @@ int main(int argc, char **argv)
             cudaMalloc(d_b,b_size*sizeof(float));
             cudaMalloc(d_c,c_size*sizeof(float));
 
-            // cudaMemcpy(*d_a,a,a_size*sizeof(float),cudaMemcpyHostToDevice);
-            // cudaMemcpy(*d_b,b,b_size*sizeof(float),cudaMemcpyHostToDevice);
-            // cudaMemcpy(*d_c,c,c_size*sizeof(float),cudaMemcpyHostToDevice);
-
             cudaMemcpyAsync(*d_a,a,a_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
             cudaMemcpyAsync(*d_b,b,b_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
             cudaMemcpyAsync(*d_c,c,c_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
@@ -390,17 +382,6 @@ int main(int argc, char **argv)
 
     end_timer("host to device copy");
 
-    // for(int d=0;d<ndevs;d++){
-    //     float **d_a = &dev_pointers[d][0];
-    //     float **d_b = &dev_pointers[d][1];
-    //     float **d_c = &dev_pointers[d][2];
-        
-    //     cudaSetDevice(0);
-    //     printMatrixGPU(*d_a,M,K);
-    //     printMatrixGPU(*d_b,K,N);
-    //     printMatrixGPU(*d_c,M,N);
-    //     cudaDeviceSynchronize();
-    // }
     start_timer();
     for (int i = 0; i < numTasks; i++)
     {
@@ -459,37 +440,31 @@ int main(int argc, char **argv)
 
     start_timer();
     
-    for(int d=0;d<ndevs;d++){
-            float **d_c = &dev_pointers[d][2];
-            cudaMemcpy(c_cpu,*d_c,c_size*sizeof(float),cudaMemcpyDeviceToHost);
-            cudaDeviceSynchronize();
-            int chk_size = (c_size+numThreads-1)/numThreads;
-            for(int i=0;i<numThreads;i++){
-                threads.push_back(std::thread([&, i]()
-                {
-                    // printf("i=%d (%d,%d)\n",i,i*chk_size,MIN(c_size,(i+1)*chk_size));
-                    for(int j=i*chk_size; j<MIN(c_size,(i+1)*chk_size); j++) c[j]+=c_cpu[j];
-                }));
-            }
-            for (auto &thread: threads)
-                thread.join();
-            threads.clear();
+    for (int i = 0; i < numTasks; i++){
+        int d = chosen[i];
+
+        int start = i*rowsPerTask*N, end = MIN((i+1)*rowsPerTask,M)*N;
+        int items = (end-start);
+        float **d_c = &dev_pointers[d][2];
+        cudaMemcpyAsync(c+start,*d_c+start,items*sizeof(float),cudaMemcpyDeviceToHost,streams[d][nxt_strm(strm_ctr[d])]);
     }
     
-
+    for(int d=0;d<ndevs;d++)
+        cudaDeviceSynchronize();
     end_timer("device to host");
 
     if(check_result){
         printf("GPU Done... now checking correctness\n");
+        float *c_cpu;
+        cudaMallocHost(&c_cpu,c_size*sizeof(float));
+        start_timer();
         for (int ii = 0; ii < M; ii++)
             for (int jj = 0; jj < N; jj++){
                 c_cpu[ii * N + jj] = 0.0;
                 for (int kk = 0; kk < K; kk++)
                     c_cpu[ii * N + jj] += a[ii * K + kk] * b[kk * N + jj];
             }
-
-        // printMatrix(c,M,N);
-        // printMatrix(c_cpu,M,N);
+        end_timer("CPU multiplication");
 
         bool flag = true;
         for (int i = 0; i < M; i++)
@@ -507,6 +482,7 @@ int main(int argc, char **argv)
                 break;
         }
         printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
+        cudaFreeHost(c_cpu);
     }
     // printf("Sleeping\n");
     // std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -534,7 +510,10 @@ int main(int argc, char **argv)
     cudaFreeHost(a);
     cudaFreeHost(b);
     cudaFreeHost(c);
-    cudaFreeHost(c_cpu);
+
+    for(auto &dev: streams)
+        for(auto &str: dev)
+            cudaStreamDestroy(str);
 
     printf("DONE\n");
 }

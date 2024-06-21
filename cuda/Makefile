@@ -89,4 +89,4 @@ clean:
 	rm -rf *~ *.dSYM nc.vg.* $(OBJS) $(TARGETS)
 
 run: all
-	./$(TARGET) 200 200 200 0.8
+	./$(TARGET) 2000 2000 2000 0.8 64 1

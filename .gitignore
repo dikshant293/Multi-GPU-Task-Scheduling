@@ -34,3 +34,4 @@ omp/x.csv
 .vscode/settings.json
 omp/test.ipynb
 cuda/oldMM.cu
+cuda/cuda_nvhpc
