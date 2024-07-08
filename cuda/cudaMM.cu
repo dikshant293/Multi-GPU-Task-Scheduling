@@ -11,7 +11,10 @@
 #include <atomic>
 #include <mutex>
 #include <string>
+#include <algorithm>
+#include <omp.h>
 
+#define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define ABS(x) (((x) < (0)) ? (-x) : (x))
@@ -20,17 +23,24 @@
 #define MAX_TPB 32
 
 #define MM
-#define PSIZE 20
+#define PSIZE 1999
 
 #define EPSILON 1e-4
 
-#define SCHED_ROUNDROBIN
+// #define SCHED_ROUNDROBIN
+// #define SCHED_DYNAMIC
+// #define SCHED_DYNAMIC2
+// #define SCHED_RANDOM
+// #define SCHED_ADAPTIVE
+// #define SCHED_ADAPTIVE2
 
 // using data_type = float;
 
 std::mutex mtx;
+// Define the global variable
+// __device__ int d_counter = 0;
 
-cudaError_t checkCuda(cudaError_t status)
+__host__ inline cudaError_t checkCuda(cudaError_t status)
 {
     if (status != cudaSuccess)
     {
@@ -158,26 +168,52 @@ __host__ inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ng
     return chosen;
 }
 
-// Kernel for matrix-matrix multiplication
-__global__ void multiply_kernel(float *A, float *B, float *C, int rowStart, int M, int N, int K)
-{
-    int i = blockIdx.y * blockDim.y + threadIdx.y;
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    // i += rowStart;
-    if(i < M and j < N)
-    {
-        float sum = 0.0;
-        for (int k = 0; k < K; ++k)
-        {
-            sum += A[i * K + k] * B[k * N + j];
+void transposeMatrix(float* matrix, int m, int n) {
+    for (int i = 0; i < m; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            std::swap(matrix[i * n + j], matrix[j * n + i]);
         }
-        C[i * N + j] = sum;
     }
 }
 
-void cudaMallocCheck(cudaError_t status) {
-    if (status != cudaSuccess) {
-        fprintf(stderr, "CUDA error: cudaMalloc failed with error %s\n", cudaGetErrorString(status));
+// Kernel for matrix-matrix multiplication
+__global__ void multiply_kernel(float *A, float *B, float *C, int rowStart, int M, int N, int K)
+{
+    // int i = blockIdx.y * blockDim.y + threadIdx.y;
+    // int j = blockIdx.x * blockDim.x + threadIdx.x;
+    // // i += rowStart;
+    // printf("i inc = %d j inc = %d\n",blockDim.y*gridDim.y,blockDim.x*gridDim.x);
+    for(int i = blockIdx.y * blockDim.y + threadIdx.y;i<M;i+=blockDim.y*gridDim.y){
+        for(int j = blockIdx.x * blockDim.x + threadIdx.x;j<N;j+=blockDim.x*gridDim.x)
+    // if(i < M and j < N)
+            {
+                // atomicAdd(&d_counter, 1);
+                float sum = 0.0;
+                
+                #if defined(VECTORIZE)
+                auto a = reinterpret_cast<float4*>(&A[i * K]);
+                auto b = reinterpret_cast<float4*>(&B[j * K]);
+                // printf("check %d %d (%p %p) (%p %p) %d\n",i*K*4,j*K*4,a,&A[i * K],b,&B[j * K],K/4);
+                for (int k = 0; k < K/4; k++)
+                {
+                    // printf("before\n");
+                    // auto a = a_4[k], b = b_4[k];
+                    // printf("%f,%f,%f,%f %f,%f,%f,%f\n",a.w,a.x,a.y,a.z,b.w,b.x,b.y,b.z);
+                    sum += a->x*b->x + a->y*b->y + a->z*b->z + a->w*b->w;
+                    // printf("(%f,%f)\n",a->w,b->w);
+                    a++;
+                    b++;
+                }
+                
+                #else
+                for (int k = 0; k < K; ++k)
+                    sum += A[i * K + k] * B[j * K + k];
+                #endif
+                C[i * N + j] = sum;
+
+                
+            // printf("\n-------------\n");
+            }
     }
 }
 
@@ -233,9 +269,6 @@ int main(int argc, char **argv)
 
     // Output the number of GPUs
     printf("Number of GPUs available: %d\n", ndevs);
-
-    // assert(ndevs > 0);
-    printf("There are %d GPUs\n", ndevs);
     int *devices = (int *)calloc(ndevs, sizeof(*devices));
     // double start_iterations, end_iterations;
     unsigned *lastGPU = NULL;
@@ -243,16 +276,17 @@ int main(int argc, char **argv)
     //  int chosen[N];
     unsigned *occupancies = (unsigned *)calloc(ndevs, sizeof(*occupancies));
     unsigned long *gpuLoad = (unsigned long *)calloc(ndevs, sizeof(*gpuLoad));
-
+    
     int timestep = 1;
     // int probSize = MAXWORK;
     int numThreads = 64;
+    int numThreadsPerBlock = 256;
     // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
 
     srand((unsigned)time(NULL));
-    float granularity = 0.5;
+    float granularity = 0.9;
     if (argc <= 1)
     {
         printf("Usage bench_works [m] [n] [k] [granularity]\n");
@@ -276,28 +310,34 @@ int main(int argc, char **argv)
             }
         }
         if (argc > 5)
-            numThreads = atoi(argv[5]);
+            numThreadsPerBlock = atoi(argv[5]);
         if (argc > 6)
+            numThreads = atoi(argv[6]);
+        if (argc > 7)
             check_result = 1;
     }
     int a_size = M * K, b_size = K * N, c_size = M * N;
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
-    int numTasks = (M + rowsPerTask - 1) / rowsPerTask;
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [resMatSize=%0.2e] \n", M, N, K, numTasks, granularity, rowsPerTask, numThreads, 1.0f*c_size);
+    int numTasks = CEIL(M,rowsPerTask);
+    // int streams_per_gpu = CEIL(numTasks,ndevs);
+    int streams_per_gpu = 32;
+    numThreadsPerBlock = CEIL(1024,streams_per_gpu);
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
+            M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
     #if defined(SCHED_ROUNDROBIN)
-    printf("gpu_scheduler_static_rr\n");
+    printf("gpu_scheduler_static_rr,\t");
     #elif defined(SCHED_ADAPTIVE)
-    printf("gpu_scheduler_dynamic_ad\n");
+    printf("gpu_scheduler_dynamic_ad,\t");
     #elif defined(SCHED_ADAPTIVE2)
-    printf("gpu_scheduler_dynamic_ad2\n");
+    printf("gpu_scheduler_dynamic_ad2,\t");
     #elif defined(SCHED_RANDOM)
-    printf("gpu_scheduler_dynamic_random\n");
+    printf("gpu_scheduler_dynamic_random,\t");
     #elif defined(SCHED_DYNAMIC)
-    printf("gpu_scheduler_dynamic_occ\n");
+    printf("gpu_scheduler_dynamic_occ,\t");
     #elif defined(SCHED_DYNAMIC2)
-    printf("gpu_scheduler_dynamic_occ2\n");
+    printf("gpu_scheduler_dynamic_occ2,\t");
     #else
     printf("none 0\n");
     #endif
@@ -310,9 +350,9 @@ int main(int argc, char **argv)
 
     float *a,*b,*c;
 
-    cudaMallocHost(&a,a_size*sizeof(float));
-    cudaMallocHost(&b,b_size*sizeof(float));
-    cudaMallocHost(&c,c_size*sizeof(float));
+    checkCuda(cudaMallocHost(&a,a_size*sizeof(float)));
+    checkCuda(cudaMallocHost(&b,b_size*sizeof(float)));
+    checkCuda(cudaMallocHost(&c,c_size*sizeof(float)));
 
     int *taskWork = (int *)malloc(sizeof(int) * numTasks);
 
@@ -323,17 +363,16 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < a_size; i++)
         // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        a[i] = 1.0;
+        a[i] = i%4;
 
     for (int i = 0; i < b_size; i++)
         // b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        b[i] = 2.0;
+        b[i] = 4+i%3;
 
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
 
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);
-    int streams_per_gpu = 4;
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
     for(int d=0;d<ndevs;d++){
         cudaSetDevice(d);
@@ -349,43 +388,57 @@ int main(int argc, char **argv)
         return temp;
     };
 
-    // float *(*dev_pointers)[3];
-    // dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
 
+    std::vector<float*> d_b_global(ndevs);
     std::vector<std::thread> threads;
+    transposeMatrix(b,K,N);
 
-    // start_timer();
-
-    // for(int d=0;d<ndevs;d++){
-    //     threads.push_back(std::thread([&, d]()
-    //     {
-    //         // float **d_a = &dev_pointers[d][0];
-    //         float **d_b = &dev_pointers[d][1];
-    //         // float **d_c = &dev_pointers[d][2];
-
-    //         cudaSetDevice(d);
-    //         // cudaMallocAsync(d_a,a_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
-    //         cudaMallocAsync(d_b,b_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
-    //         // cudaMallocAsync(d_c,c_size*sizeof(float),streams[d][nxt_strm(strm_ctr[d])]);
-
-    //         // cudaMemcpyAsync(*d_a,a,a_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
-    //         cudaMemcpyAsync(*d_b,b,b_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
-    //         // cudaMemcpyAsync(*d_c,c,c_size*sizeof(float),cudaMemcpyHostToDevice,streams[d][nxt_strm(strm_ctr[d])]);
-            
-    //         cudaDeviceSynchronize();
-    //     }));
-    // }
-
-    // for (auto &thread: threads)
-    //     thread.join();
-    // threads.clear();
-
-    // end_timer("host to device copy");
-
+    #if defined(VECTORIZE)
+    printf("vectorized,\t");
+    #else
+    printf("non-vectorized,\t");
+    #endif
     start_timer();
+
+    #if defined(PRE_TRANSFER)
+    printf("PRE TRANSFER\n");
+    for(int d=0;d<ndevs;d++){
+        threads.push_back(std::thread([&, d]()
+        {
+            cudaSetDevice(d);
+
+            int nxt = nxt_strm(strm_ctr[d]);
+            auto stream = streams[d][nxt];
+            
+            cudaMallocAsync(&d_b_global[d],b_size*sizeof(float),stream);
+            cudaMemcpyAsync(d_b_global[d],b,b_size*sizeof(float),cudaMemcpyHostToDevice,stream);
+            
+            cudaDeviceSynchronize();
+        }));
+    }
+
+    for (auto &thread: threads)
+        thread.join();
+    threads.clear();
+    #else
+    printf("No pre transfer\n");
+    #endif
+    int nextTask = ndevs;
+
     for (int i = 0; i < numTasks; i++)
     {
         threads.push_back(std::thread([&,i](){
+
+            int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
+            int nRows = end-start;
+            float *d_a, *d_b, *d_c;
+            int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
+            
+            m=nRows; n=N; k=K;
+            a_start = start*K; b_start = 0;   c_start = start*N;
+            a_items = nRows*K; b_items = K*N; c_items = nRows*N;
+            
+            const int NNsq = c_items;
 
             #if defined(SCHED_ROUNDROBIN)
             const int dev = gpu_scheduler_static_rr(i, ndevs);
@@ -406,81 +459,111 @@ int main(int argc, char **argv)
                 chosen[i] = dev;
             success[i] = 0;
 
-            int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
-            int nRows = end-start;
-
             int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-
-            // float **d_a = &dev_pointers[d][0];
-            // float **d_b = &dev_pointers[d][1];
-            // float **d_c = &dev_pointers[d][2];
 
             devices[d]++;
 
-            // Launch kernel for mative GPU matrix multiplication
             int nxt = nxt_strm(strm_ctr[d]);
-            printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
+            // printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
             
-            cudaSetDevice (d);
+            cudaSetDevice(d);
             auto stream = streams[d][nxt];
-            float *d_a, *d_b, *d_c;
-            int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
-            
-            m=nRows; n=N; k=K;
-            a_start = start*K; b_start = 0;   c_start = start*N;
-            a_items = nRows*K; b_items = K*N; c_items = nRows*N;
-            
+
             cudaMallocAsync(&d_a,a_items*sizeof(float),stream);
-            cudaMallocAsync(&d_b,b_items*sizeof(float),stream);
-            cudaMallocAsync(&d_c,c_items*sizeof(float),stream);
-            
             cudaMemcpyAsync(d_a,a+a_start,a_items*sizeof(float),cudaMemcpyHostToDevice,stream);
+            
+            #if not defined(PRE_TRANSFER)
+            cudaMallocAsync(&d_b,b_items*sizeof(float),stream);
             cudaMemcpyAsync(d_b,b+b_start,b_items*sizeof(float),cudaMemcpyHostToDevice,stream);
+            #endif
+            
+            cudaMallocAsync(&d_c,c_items*sizeof(float),stream);
             cudaMemcpyAsync(d_c,c+c_start,c_items*sizeof(float),cudaMemcpyHostToDevice,stream);
             
-            dim3 blocksPerGrid((n+min(MAX_TPB,n)-1)/min(MAX_TPB,n), (m+min(MAX_TPB,m)-1)/min(MAX_TPB,m));
-            dim3 threadsPerBlock(min(MAX_TPB,n), min(MAX_TPB,m)); // Assuming width and height are within max threads per block limit 
-            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b,d_c,start,m,n,k);
             
+            int blk_x = min(MAX_TPB,n), blk_y = min(MAX_TPB,m);
+            // dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
+            // dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
+            dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
+            dim3 threadsPerBlock(numThreadsPerBlock,1);
+            // dim3 blocksPerGrid(1,1);
+            // dim3 threadsPerBlock(1,1);
+            // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
+            #if defined(PRE_TRANSFER)
+            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b_global[d],d_c,start,m,n,k);
+            #else
+            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b,d_c,start,m,n,k);
+            #endif
             cudaMemcpyAsync(c+c_start,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost,stream);
 
             cudaFreeAsync(d_a,stream);
+            #if not defined(PRE_TRANSFER)
             cudaFreeAsync(d_b,stream);
+            #endif
             cudaFreeAsync(d_c,stream);
             
+            #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
             success[i] = 1;
+            // cudaStreamSynchronize(stream);
+            occupancies[d]--;
+            #endif
+            #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+            // cudaStreamSynchronize(stream);
+            success[i] = 1;
+            gpuLoad[d] -= NNsq;
+            // nextTask assignedTo the GPU just freed                                                                                                                                                                      
+            int myTask;
+            #pragma omp atomic capture 
+            myTask = nextTask++;
+            if(myTask < numTasks) chosen[myTask] = d;
+            #endif
+        }));
+    }
+    
+    for (auto &thread: threads){
+        // std::cout<<"waiting for "<<thread.get_id()<<std::endl;
+        thread.join();
+    }
+    threads.clear();
+
+    for(int d=0;d<ndevs;d++){
+        threads.push_back(std::thread([&, d]()
+        {
+            cudaSetDevice (d);
+            cudaDeviceSynchronize();
         }));
     }
 
     for (auto &thread: threads)
         thread.join();
     threads.clear();
-    
-    for(int d=0;d<ndevs;d++)
-        cudaDeviceSynchronize();
+
+    #if defined(PRE_TRANSFER)
+    for(int d=0;d<ndevs;d++){
+        threads.push_back(std::thread([&, d]()
+        {
+            cudaSetDevice (d);
+            int nxt = nxt_strm(strm_ctr[d]);
+            auto stream = streams[d][nxt];
+            cudaFreeAsync(d_b_global[d],stream);
+            cudaDeviceSynchronize();
+        }));
+    }
+
+    for (auto &thread: threads)
+        thread.join();
+    threads.clear();
+    #endif
 
     end_timer("GPU multiplication");
-
-    // start_timer();
-    
-    // for (int i = 0; i < numTasks; i++){
-    //     int d = chosen[i];
-
-    //     int start = i*rowsPerTask*N, end = MIN((i+1)*rowsPerTask,M)*N;
-    //     int items = (end-start);
-    //     float **d_c = &dev_pointers[d][2];
-    //     cudaMemcpyAsync(c+start,*d_c+start,items*sizeof(float),cudaMemcpyDeviceToHost,streams[d][nxt_strm(strm_ctr[d])]);
-    // }
-    
-    // for(int d=0;d<ndevs;d++)
-    //     cudaDeviceSynchronize();
-    // end_timer("device to host");
+    transposeMatrix(b,K,N);
 
     if(check_result){
-        printf("GPU Done... now checking correctness\n");
         float *c_cpu;
-        cudaMallocHost(&c_cpu,c_size*sizeof(float));
+        // checkCuda(cudaMallocHost(&c_cpu,c_size*sizeof(float)));
+        c_cpu = (float*)malloc(c_size*sizeof(float));
         start_timer();
+        printf("GPU Done... now checking correctness\n");
         for (int ii = 0; ii < M; ii++)
             for (int jj = 0; jj < N; jj++){
                 c_cpu[ii * N + jj] = 0.0;
@@ -490,46 +573,26 @@ int main(int argc, char **argv)
         end_timer("CPU multiplication");
 
         bool flag = true;
+        int mismatches = 0;
         for (int i = 0; i < M; i++)
         {
             for (int j = 0; j < N; j++){
                 float x = c[i * N + j], y = c_cpu[i * N + j];
                 if (x != y && ABS((x - y)) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
                 {
-                    printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
+                    printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS((x - y)));
                     flag = false;
+                    mismatches++;
                     // break;
                 }
             }
-            if (!flag)
-                break;
+            // if (!flag)
+            //     break;
         }
-        printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
+        printf("Correctness check: %s (mismatches = %d)\n",(flag ? "PASSED" : "FAILED"), mismatches);
         cudaFreeHost(c_cpu);
     }
-    // printf("Sleeping\n");
-    // std::this_thread::sleep_for(std::chrono::seconds(5));
     
-    // for(int d=0;d<ndevs;d++){
-    //     threads.push_back(std::thread([&, d]()
-    //     {
-    //         // float **d_a = &dev_pointers[d][0];
-    //         float **d_b = &dev_pointers[d][1];
-    //         // float **d_c = &dev_pointers[d][2];
-
-    //         cudaSetDevice(d);
-    //         // cudaFreeAsync(d_a,streams[d][nxt_strm(strm_ctr[d])]);
-    //         cudaFreeAsync(d_b,streams[d][nxt_strm(strm_ctr[d])]);
-    //         // cudaFreeAsync(d_c,streams[d][nxt_strm(strm_ctr[d])]);
-
-    //         cudaDeviceSynchronize();
-    //     }));
-    // }
-
-    // for(auto &thread: threads)
-    //     thread.join();
-    // threads.clear();
-    // printMatrix(c,M,N);
     cudaFreeHost(a);
     cudaFreeHost(b);
     cudaFreeHost(c);
@@ -538,5 +601,5 @@ int main(int argc, char **argv)
         for(auto &str: dev)
             cudaStreamDestroy(str);
 
-    printf("DONE\n");
+    printf("DONE\n\n");
 }

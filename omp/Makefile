@@ -2,7 +2,7 @@
 # Compiler Options
 #===============================================================================
 
-COMPILER    = nvhpc
+COMPILER    = llvm_nv
 OPTIMIZE    = yes
 DEBUG       = no
 PROFILE     = no
@@ -15,8 +15,8 @@ SAVE_TEMP = 0
 # Program name & source code list
 #===============================================================================
 
-OBJ = task2gpu_bench.o
-SRC = task2gpu_bench.cpp
+OBJ = ompMM.o
+SRC = ompMM.cpp
 TARGET = t2g_$(COMPILER)
 
 #===============================================================================

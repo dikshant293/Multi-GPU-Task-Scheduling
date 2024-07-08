@@ -35,3 +35,7 @@ omp/x.csv
 omp/test.ipynb
 cuda/oldMM.cu
 cuda/cuda_nvhpc
+.vscode
+cuda/report*
+cuda/test.txt
+hlp
