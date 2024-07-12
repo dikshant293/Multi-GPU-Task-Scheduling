@@ -5,14 +5,18 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <assert.h>
-#include <thread>
 #include <vector>
 #include <iostream>
-#include <atomic>
-#include <mutex>
 #include <string>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <omp.h>
+#include <cstdlib>
+#include <numeric>
+#include <cmath>
+#include <ctime> 
 
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -23,7 +27,7 @@
 #define MAX_TPB 32
 
 #define MM
-#define PSIZE 1999
+#define PSIZE 2000
 
 #define EPSILON 1e-4
 
@@ -39,6 +43,9 @@
 std::mutex mtx;
 // Define the global variable
 // __device__ int d_counter = 0;
+
+// #define USEOPENMP
+// #define PRE_TRANSFER
 
 __host__ inline cudaError_t checkCuda(cudaError_t status)
 {
@@ -217,6 +224,10 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int rowStart, int 
     }
 }
 
+__global__ void gpu_check(int i, int d){
+    printf("task %d on GPU %d done\n", i, d);
+}
+
 void printMatrix(float *mat, int m, int n){
     for(int i=0;i<m;i++){
         for(int j=0;j<n;j++){
@@ -255,6 +266,113 @@ void end_timer(std::string func){
     std::cout<<func<<" took "<<1.0e-9 * duration.count()<<" seconds\n";
 }
 
+void joinThreads(std::vector<std::thread> &threads){
+    #if not defined(USEOPENMP)
+    for (auto &thread: threads){
+        thread.join();
+    }
+    threads.clear();
+    #endif
+}
+
+// Function to calculate mean of chunk sizes
+double calculateMean(const std::vector<int>& chunkSizes) {
+    double sum = 0.0;
+    for (int size : chunkSizes) {
+        sum += size;
+    }
+    std::cout << "Mean: " << sum / chunkSizes.size() << "\t";
+    return sum / chunkSizes.size();
+}
+
+// Function to calculate standard deviation of chunk sizes
+double calculateStandardDeviation(const std::vector<int>& chunkSizes, double mean) {
+    double sum = 0.0;
+    for (int size : chunkSizes) {
+        sum += std::pow(size - mean, 2);
+    }
+    std::cout << "Standard deviation: " << std::sqrt(sum / chunkSizes.size()) << std::endl;
+    return std::sqrt(sum / chunkSizes.size());
+}
+
+// Function to calculate chunk sizes from start indices
+std::vector<int> calculateChunkSizes(const std::vector<int>& startIndexes, int n) {
+    std::vector<int> chunkSizes;
+    for (size_t i = 0; i < startIndexes.size(); ++i) {
+        if (i == startIndexes.size() - 1) {
+            chunkSizes.push_back(n - startIndexes[i]);  // Last chunk goes to the end of the array
+        } else {
+            chunkSizes.push_back(startIndexes[i + 1] - startIndexes[i]);
+        }
+    }
+    return chunkSizes;
+}
+
+std::vector<int> generateUniformChunkStartIndices(int n, int m) {
+    std::vector<int> chunkSizes(m, 1); // Start each chunk with at least one element
+    int remainingElements = n - m;    // Elements left after giving 1 to each chunk
+
+    srand(101);
+    // Distribute the remaining elements randomly
+    for (int i = 0; i < remainingElements; ++i) {
+        int chunkIndex = rand() % m;
+        chunkSizes[chunkIndex]++;
+    }
+
+    // Calculate the starting indices
+    std::vector<int> startIndexes(m);
+    std::partial_sum(chunkSizes.begin(), chunkSizes.end() - 1, startIndexes.begin() + 1);
+
+    return startIndexes;
+}
+
+std::vector<int> generateEqualChunkStartIndices(int n, int m) {
+    std::vector<int> startIndexes;
+    int baseSize = n / m;               // Base size of each chunk
+    int remainder = n % m;              // Remainder to be distributed
+    int startIndex = 0;
+
+    // Generate starting indices based on uniform chunk sizes
+    for (int i = 0; i < m; ++i) {
+        startIndexes.push_back(startIndex);
+        int currentChunkSize = baseSize + (i < remainder ? 1 : 0);  // Distribute remainder among the first few chunks
+        startIndex += currentChunkSize;
+    }
+
+    return startIndexes;
+}
+
+
+std::vector<int> generateRandomChunkStartIndices(int n, int m) {
+    std::vector<int> chunkSizes;
+    std::vector<int> startIndexes;
+    int totalSize = 0;
+
+    // Seed the random number generator
+    srand(101);
+
+    // Generate random chunk sizes
+    for (int i = 0; i < m; ++i) {
+        if (i == m - 1) {
+            chunkSizes.push_back(n - totalSize); // Last chunk takes the remaining elements
+        } else {
+            int remaining = n - totalSize - (m - i - 1); // Ensure space for at least 1 element per remaining chunk
+            int chunkSize = 1 + rand() % remaining;
+            chunkSizes.push_back(chunkSize);
+            totalSize += chunkSize;
+        }
+    }
+
+    // Calculate starting indices from chunk sizes
+    int startIndex = 0;
+    for (int size : chunkSizes) {
+        startIndexes.push_back(startIndex);
+        startIndex += size;
+    }
+
+    return startIndexes;
+}
+
 int main(int argc, char **argv)
 {
     int ndevs = 0;
@@ -285,7 +403,7 @@ int main(int argc, char **argv)
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
 
-    srand((unsigned)time(NULL));
+    // srand((unsigned)time(NULL));
     float granularity = 0.9;
     if (argc <= 1)
     {
@@ -382,29 +500,68 @@ int main(int argc, char **argv)
     std::vector<int> strm_ctr(ndevs,0);
 
     auto nxt_strm = [&](int& x) -> int {
-        std::lock_guard<std::mutex> lock(mtx);
-        int temp = x;
-        x = (x+1)%streams_per_gpu;
+        int temp;
+    #if defined(USEOPENMP)
+        #pragma omp critical
+        {
+    #endif
+    #if not defined(USEOPENMP)
+            std::lock_guard<std::mutex> lock(mtx);
+    #endif
+            temp = x;
+            x = (x+1)%streams_per_gpu;
+    #if defined(USEOPENMP)
+        }
+    #endif
         return temp;
     };
 
+    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
+    
+    // startIndexes = generateUniformChunkStartIndices(M, numTasks);
+    startIndexes = generateRandomChunkStartIndices(M, numTasks);
+
+    // std::cout << "Starting indices of chunks: ";
+    // for (int index : startIndexes) {
+    //     std::cout << index << " ";
+    // }
+    // std::cout << std::endl;
+    
+    // Calculate chunk sizes from start indices
+    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
+
+    calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
 
     std::vector<float*> d_b_global(ndevs);
-    std::vector<std::thread> threads;
-    transposeMatrix(b,K,N);
 
+    std::vector<std::thread> threads;
+
+    transposeMatrix(b,K,N);
+    
     #if defined(VECTORIZE)
     printf("vectorized,\t");
     #else
     printf("non-vectorized,\t");
     #endif
+
+    #if defined(USEOPENMP)
+    printf("openMP,\t");
+    #else
+    printf("non-openMP,\t");
+    #endif
+
+
     start_timer();
 
     #if defined(PRE_TRANSFER)
     printf("PRE TRANSFER\n");
+    #if defined(USEOPENMP)
+    #pragma omp parallel for schedule(static,1)
+    #endif
     for(int d=0;d<ndevs;d++){
-        threads.push_back(std::thread([&, d]()
-        {
+        #if not defined(USEOPENMP)
+        threads.push_back(std::thread([&, d]() {
+        #endif
             cudaSetDevice(d);
 
             int nxt = nxt_strm(strm_ctr[d]);
@@ -414,22 +571,28 @@ int main(int argc, char **argv)
             cudaMemcpyAsync(d_b_global[d],b,b_size*sizeof(float),cudaMemcpyHostToDevice,stream);
             
             cudaDeviceSynchronize();
+        
+        #if not defined(USEOPENMP)
         }));
+        #endif
     }
 
-    for (auto &thread: threads)
-        thread.join();
-    threads.clear();
+    joinThreads(threads);
     #else
     printf("No pre transfer\n");
     #endif
     int nextTask = ndevs;
 
-    for (int i = 0; i < numTasks; i++)
-    {
+    #if defined(USEOPENMP)
+    #pragma omp parallel for schedule(static,1)
+    #endif
+    for (int i = 0; i < numTasks; i++){
+        // printf("thread %d\ti %d\n",omp_get_thread_num(),i);
+        #if not defined(USEOPENMP)
         threads.push_back(std::thread([&,i](){
-
-            int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
+        #endif
+            // int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
+            int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
             int nRows = end-start;
             float *d_a, *d_b, *d_c;
             int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
@@ -489,6 +652,7 @@ int main(int argc, char **argv)
             // dim3 blocksPerGrid(1,1);
             // dim3 threadsPerBlock(1,1);
             // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
+            
             #if defined(PRE_TRANSFER)
             multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b_global[d],d_c,start,m,n,k);
             #else
@@ -502,13 +666,15 @@ int main(int argc, char **argv)
             #endif
             cudaFreeAsync(d_c,stream);
             
+            // gpu_check<<<1,1,0,stream>>>(i,d);
+
             #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
             success[i] = 1;
-            // cudaStreamSynchronize(stream);
+            cudaStreamSynchronize(stream);
             occupancies[d]--;
             #endif
             #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
-            // cudaStreamSynchronize(stream);
+            cudaStreamSynchronize(stream);
             success[i] = 1;
             gpuLoad[d] -= NNsq;
             // nextTask assignedTo the GPU just freed                                                                                                                                                                      
@@ -517,46 +683,60 @@ int main(int argc, char **argv)
             myTask = nextTask++;
             if(myTask < numTasks) chosen[myTask] = d;
             #endif
+            // printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
+        
+        #if not defined(USEOPENMP)
         }));
+        #endif
     }
     
-    for (auto &thread: threads){
-        // std::cout<<"waiting for "<<thread.get_id()<<std::endl;
-        thread.join();
-    }
-    threads.clear();
+    joinThreads(threads);
 
+    #if defined(USEOPENMP)
+    #pragma omp parallel for schedule(static,1)
+    #endif
     for(int d=0;d<ndevs;d++){
+        #if not defined(USEOPENMP)
         threads.push_back(std::thread([&, d]()
         {
+        #endif
             cudaSetDevice (d);
             cudaDeviceSynchronize();
+        #if not defined(USEOPENMP)
         }));
+        #endif
     }
 
-    for (auto &thread: threads)
-        thread.join();
-    threads.clear();
+    joinThreads(threads);
 
     #if defined(PRE_TRANSFER)
+    #if defined(USEOPENMP)
+    #pragma omp parallel for schedule(static,1)
+    #endif
     for(int d=0;d<ndevs;d++){
-        threads.push_back(std::thread([&, d]()
-        {
+        #if not defined(USEOPENMP)
+        threads.push_back(std::thread([&, d]() {
+        #endif
             cudaSetDevice (d);
             int nxt = nxt_strm(strm_ctr[d]);
             auto stream = streams[d][nxt];
             cudaFreeAsync(d_b_global[d],stream);
             cudaDeviceSynchronize();
+        #if not defined(USEOPENMP)
         }));
+        #endif
     }
-
-    for (auto &thread: threads)
-        thread.join();
-    threads.clear();
     #endif
+    
+    joinThreads(threads);
 
     end_timer("GPU multiplication");
     transposeMatrix(b,K,N);
+
+    std::vector<int> percent(ndevs,0);
+    for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
+    for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
+    printf("\n"); 
 
     if(check_result){
         float *c_cpu;
