@@ -16,7 +16,7 @@
 #include <cstdlib>
 #include <numeric>
 #include <cmath>
-#include <ctime> 
+#include <ctime>
 
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -402,7 +402,7 @@ int main(int argc, char **argv)
     // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
-
+    int streams_per_gpu = 4;
     // srand((unsigned)time(NULL));
     float granularity = 0.9;
     if (argc <= 1)
@@ -430,7 +430,7 @@ int main(int argc, char **argv)
         if (argc > 5)
             numThreadsPerBlock = atoi(argv[5]);
         if (argc > 6)
-            numThreads = atoi(argv[6]);
+            streams_per_gpu = atoi(argv[6]);
         if (argc > 7)
             check_result = 1;
     }
@@ -438,8 +438,8 @@ int main(int argc, char **argv)
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
     int numTasks = CEIL(M,rowsPerTask);
-    // int streams_per_gpu = CEIL(numTasks,ndevs);
-    int streams_per_gpu = 32;
+    // streams_per_gpu = CEIL(numTasks,ndevs);
+    // streams_per_gpu = 4;
     numThreadsPerBlock = CEIL(1024,streams_per_gpu);
     printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
@@ -519,7 +519,7 @@ int main(int argc, char **argv)
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
     
     // startIndexes = generateUniformChunkStartIndices(M, numTasks);
-    startIndexes = generateRandomChunkStartIndices(M, numTasks);
+    // startIndexes = generateRandomChunkStartIndices(M, numTasks);
 
     // std::cout << "Starting indices of chunks: ";
     // for (int index : startIndexes) {

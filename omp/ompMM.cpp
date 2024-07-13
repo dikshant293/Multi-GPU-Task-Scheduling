@@ -5,6 +5,17 @@
 #include <math.h>
 #include <omp.h>
 #include <limits.h>
+#include <vector>
+#include <iostream>
+#include <string>
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <cstdlib>
+#include <numeric>
+#include <cmath>
+#include <ctime>
 
 // Input data distribution
 #define RANDOM_SIZED_TASKS
@@ -26,10 +37,12 @@
 // #define SCHED_ADAPTIVE
 // #define SCHED_ADAPTIVE2
 
-#define MIN(x,y) ((x)<(y)?(x):(y))
-#define MAX(x,y) ((x)>(y)?(x):(y))
-#define ABS(x) ((x) < 0 ? -(x) : (x))
-#define EPSILON 1e-4
+
+#define CEIL(x, y) (((x) + (y) - 1) / (y))
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
+#define ABS(x) (((x) < (0)) ? (-x) : (x))
+#define EPSILON 1e-6
 
 using data_type = float;
 
@@ -160,6 +173,25 @@ void printMatrix(data_type *mat, int m, int n){
     printf("\n");
 }
 
+auto clk = std::chrono::high_resolution_clock::now();
+
+void start_timer(){
+    clk = std::chrono::high_resolution_clock::now();
+}
+
+void end_timer(std::string func){
+    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - clk);
+    std::cout<<func<<" took "<<1.0e-9 * duration.count()<<" seconds\n";
+}
+
+void transposeMatrix(float* matrix, int m, int n) {
+    for (int i = 0; i < m; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            std::swap(matrix[i * n + j], matrix[j * n + i]);
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     const int ndevs = omp_get_num_devices();
@@ -175,14 +207,14 @@ int main(int argc, char *argv[])
 
     int timestep = 1;
     // int probSize = MAXWORK;
-    int numThreads = 1;
-    #pragma omp parallel
-    numThreads = omp_get_num_threads();
-    data_type granularity = 0.5;
-    int M=PSIZE,N=PSIZE,K=PSIZE;
-    // int numloop = MAX_LOOP;
+    int numThreads = 64;
+    int numThreadsPerBlock = 256;
+    // numThreads = omp_get_num_threads();
+    int M = PSIZE, N = PSIZE, K = PSIZE;
+    int check_result = 0;
 
-    srand((unsigned)time(NULL));
+    // srand((unsigned)time(NULL));
+    float granularity = 0.9;
     if (argc <= 1)
     {
         printf("Usage bench_works [m] [n] [k] [granularity]\n");
@@ -196,21 +228,31 @@ int main(int argc, char *argv[])
             N = atoi(argv[2]);
         if (argc > 3)
             K = atoi(argv[3]);
-        if (argc > 4) {
+        if (argc > 4)
+        {
             granularity = atof(argv[4]);
-            if (granularity < 0.0 || granularity > 1.0) {
+            if (granularity < 0.0 || granularity > 1.0)
+            {
                 fprintf(stderr, "Error: granularity must be between 0.0 and 1.0. Received %lf.\n", granularity);
                 exit(1); // Exit with error code 1
             }
         }
-        // if (argc > 4)
-        //     numloop = atoi(argv[4]);
+        if (argc > 5)
+            numThreadsPerBlock = atoi(argv[5]);
+        if (argc > 6)
+            numThreads = atoi(argv[6]);
+        if (argc > 7)
+            check_result = 1;
     }
-    int a_size = M*K, b_size = K*N, c_size = M*N;
+    int a_size = M * K, b_size = K * N, c_size = M * N;
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
-    int numTasks = (M + rowsPerTask - 1) / rowsPerTask;
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] \n", M, N, K, numTasks, granularity, rowsPerTask, numThreads);
+    int numTasks = CEIL(M,rowsPerTask);
+    // int streams_per_gpu = CEIL(numTasks,ndevs);
+    int streams_per_gpu = 32;
+    numThreadsPerBlock = CEIL(1024,streams_per_gpu);
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
+            M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
     data_type *a = (data_type *)malloc(a_size * sizeof(data_type));
     data_type *b = (data_type *)malloc(b_size * sizeof(data_type));
@@ -226,10 +268,12 @@ int main(int argc, char *argv[])
     // initialize
 
     for (int i = 0; i < a_size; i++)
-        a[i] = (data_type)rand()/RAND_MAX * 2.0 - 1.0;
+        // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
+        a[i] = i%4;
 
     for (int i = 0; i < b_size; i++)
-        b[i] = (data_type)rand()/RAND_MAX * 2.0 - 1.0;
+        // b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
+        b[i] = 4+i%3;
 
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
@@ -291,7 +335,7 @@ int main(int argc, char *argv[])
     #else
     printf("none 0\n");
     #endif
-
+    
     #if defined(ASYN)
     printf("asyn nowait\n");
     #else
@@ -302,11 +346,10 @@ int main(int argc, char *argv[])
     data_type * __restrict (*dev_pointers)[3];
     dev_pointers = (data_type *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
 
-    
-    start_iterations = omp_get_wtime();
+    printf("Max teams: %d\n",omp_get_max_teams());
+    start_timer();
     #pragma omp parallel for shared(dev_pointers)
     for(int d=0;d<ndevs;d++){
-        // printf("CPU %d\n",omp_get_thread_num());
         dev_pointers[d][0] = (data_type *)omp_target_alloc(a_size * sizeof(data_type), d);
         dev_pointers[d][1] = (data_type *)omp_target_alloc(b_size * sizeof(data_type), d);
         dev_pointers[d][2] = (data_type *)omp_target_alloc(c_size * sizeof(data_type), d);
@@ -315,15 +358,16 @@ int main(int argc, char *argv[])
         omp_target_memcpy(dev_pointers[d][1], b, b_size * sizeof(data_type), 0, 0, d, host_id);
         omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(data_type), 0, 0, d, host_id);
     }
-
-    #pragma omp parallel
-    {
-        #pragma omp single
-        {
-            #pragma omp parallel for shared(success, nextTask, chosen)
+    printf("copy done, starting mul\n");
+    // #pragma omp parallel
+    // {
+        // #pragma omp single
+        // {
+            #pragma omp parallel for shared(success, nextTask, chosen) schedule(static,1)
             // #pragma omp taskloop shared(success, nextTask, chosen) grainsize(gsz)
             for (int i = 0; i < numTasks; i++)
             {
+                // printf("task %d on thread %d\n",i, omp_get_thread_num());
                 // if (taskWork[i] > probSize)
                 //     taskWork[i] = probSize;
                 // const int NN = taskWork[i];
@@ -353,8 +397,16 @@ int main(int argc, char *argv[])
                     chosen[i] = dev;
                 success[i] = 0;
 
+                int d = chosen[i]; 
                 int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
                 int nRows = end-start;
+                int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
+            
+                m=nRows; n=N; k=K;
+                a_start = start*K; b_start = 0;   c_start = start*N;
+                a_items = nRows*K; b_items = K*N; c_items = nRows*N;
+                
+                const int NNsq = c_items;
 /*#pragma omp task depend(in: chosen[i], inout: success[i])// name: fire [i]
       {
     int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
@@ -362,12 +414,12 @@ int main(int argc, char *argv[])
                success[i] = 0;
           // name: fire [i]
 */
-                #pragma omp task depend(in : chosen[i]) depend(inout : success[i])
-                {
-                    int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-                    data_type * __restrict d_a = dev_pointers[d][0];
-                    data_type * __restrict d_b = dev_pointers[d][1];
-                    data_type * __restrict d_c = dev_pointers[d][2];
+                // #pragma omp task depend(in : chosen[i]) depend(inout : success[i])
+                // {
+                    // int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
+                    data_type *d_a = dev_pointers[d][0];
+                    data_type *d_b = dev_pointers[d][1];
+                    data_type *d_c = dev_pointers[d][2];
     
                     // #if defined(ASYN)
                     // #pragma omp target device(d) \
@@ -376,38 +428,42 @@ int main(int argc, char *argv[])
                     // #pragma omp target device(d) \
                     // map(to : a[0 : a_size], b[0 : b_size]) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1], c[0 : c_size])
                     // #endif
-                    #if defined(ASYN)
-                    #pragma omp target device(d) \
-                    map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c) nowait
-                    #else
-                    #pragma omp target device(d) \
-                    map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c)
-                    #endif
-                    {
+                    
+                    // #if defined(ASYN)
+                    // #pragma omp target device(d) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c) nowait
+                    // #else
+                    // #pragma omp target device(d) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c)
+                    // #endif
+                    // {
+                        // printf("GPU-%d\n",omp_get_device_num());
                         devices[d]++;
                         // const int NN = taskWork[i];
-                        // printf("GPU = %d NN = %d\n", omp_get_device_num(), NN);
-                        #ifdef MM
-                        printf("GPU %d\n",omp_get_device_num());
+                        // printf("dev %d [%d] (%d,%d) GPU\n",omp_get_device_num(),i,start,end);
+                        // #ifdef MM
                         // for (int l = 0; l < nl; l++)
                             // #pragma omp target teams disrtibute parallel for colapse(3)
 
                             // printf("GPU %d: task num = %d start = %d end = %d size = %d\n",omp_get_device_num(),i,start,end,nRows);
-                            for (int ii = start; ii < end; ii++)
-                                for (int jj = 0; jj < N; jj++){
+                            // for (int ii = start; ii < end; ii++){
+                            //     for (int jj = 0; jj < N; jj++){
+                                #pragma omp target teams distribute parallel for num_teams(128) device(d) is_device_ptr(d_a,d_b,d_c) nowait
+                                for(int x = c_start;x<c_start+c_items;x++){
+                                    int ii = x / n, jj = x % n;
                                     data_type sum = data_type();
                                     for (int kk = 0; kk < K; kk++)
                                         sum += d_a[ii * K + kk] * d_b[kk * N + jj];
                                     d_c[ii * N + jj] = sum;
                                 }
+                            // }
                         
                         success[i] = 1; // Note to Mathi: coudl this be outside ifdef?
-                        #endif
-                    }                    // end target
-                }                        // end task
-                #pragma omp task depend(in : success[i]) // name: post[i]
-                {
-                    int d = chosen[i]; // d is the device that just got freed
+                        // #endif
+                        // printf("task %d done\n",i);
+                //     }                    // end target
+                // }                        // end task
+                // #pragma omp task depend(in : success[i]) // name: post[i]
+                // {
+                    // int d = chosen[i]; // d is the device that just got freed
                     #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
                     occupancies[d]--;
                     #endif
@@ -421,12 +477,14 @@ int main(int argc, char *argv[])
                     if (myTask < numTasks)
                         chosen[myTask] = d;
                     #endif
-                }
+                // }
             } // end taskloop
-        }     // end of single
-        #pragma omp barrier
+    //     }     // end of single
+    //     #pragma omp barrier
         
-    } // end parallel
+    // } // end parallel
+    #pragma omp taskwait
+    printf("multiplication done.\n");
     for(int d=0;d<ndevs;d++){
         data_type *d_a = dev_pointers[d][0];
         data_type *d_b = dev_pointers[d][1];
@@ -445,7 +503,7 @@ int main(int argc, char *argv[])
     }
 
     int check = 0;
-    end_iterations = omp_get_wtime();
+    end_timer("GPU Multiplication");
     int lastFail = 0;
     for (int i = 0; i < numTasks; i++)
     {
@@ -458,33 +516,35 @@ int main(int argc, char *argv[])
         printf("failed! LastFailed %d \n", lastFail);
     }
     printf("Statistics for %d iterations:\n", numTasks);
-    printf("Loop took %lf seconds\n", end_iterations - start_iterations);
 
 
     // printf("Total number of CPU threads=%d\n", omp_get_num_threads());
-    printf("GPU Done... now checking correctness\n");
-    end_iterations = omp_get_wtime();
-    for (int ii = 0; ii < M; ii++)
-        for (int jj = 0; jj < N; jj++)
-            for (int kk = 0; kk < K; kk++)
-                c_cpu[ii * N + jj] += a[ii * K + kk] * b[kk * N + jj];
-    printf("CPU MM Mul took %lf sec\n",omp_get_wtime()-end_iterations);
-    bool flag = true;
-    for (int i = 0; i < M; i++)
-    {
-        for (int j = 0; j < N; j++){
-            data_type x = c[i * N + j], y = c_cpu[i * N + j];
-            if (x != y && ABS(x - y) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
-            {
-                printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
-                flag = false;
-                break;
+    if(check_result){
+        printf("GPU Done... now checking correctness\n");
+        start_timer();
+        #pragma omp parallel for
+        for (int ii = 0; ii < M; ii++)
+            for (int jj = 0; jj < N; jj++)
+                for (int kk = 0; kk < K; kk++)
+                    c_cpu[ii * N + jj] += a[ii * K + kk] * b[kk * N + jj];
+        end_timer("CPU Multiplication");
+        bool flag = true;
+        for (int i = 0; i < M; i++)
+        {
+            for (int j = 0; j < N; j++){
+                data_type x = c[i * N + j], y = c_cpu[i * N + j];
+                if (x != y && ABS(x - y) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
+                {
+                    printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
+                    flag = false;
+                    break;
+                }
             }
+            if (!flag)
+                break;
         }
-        if (!flag)
-            break;
+        printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
     }
-    printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
     
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
 

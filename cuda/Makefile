@@ -30,8 +30,8 @@ CFLAGS := -std=c++20 -Wall -Xcompiler -fopenmp -march=native
 LDFLAGS = -lm
 
 
-# SCHFLAG = -DSCHED_ROUNDROBIN
-SCHFLAG = -DSCHED_DYNAMIC
+SCHFLAG = -DSCHED_ROUNDROBIN
+# SCHFLAG = -DSCHED_DYNAMIC
 # SCHFLAG = -DSCHED_DYNAMIC2
 # SCHFLAG = -DSCHED_RANDOM
 # SCHFLAG = -DSCHED_ADAPTIVE
@@ -106,25 +106,25 @@ clean:
 	rm -rf *~ *.dSYM nc.vg.* $(OBJS) $(TARGETS)
 
 run: all
-	./$(TARGET) 2000 2000 2000 0.9 256 64 1
+	./$(TARGET) 2000 2000 2000 0.99 256 4 1
 
 seg: all
-	./$(TARGET) 7 7 7 0.0 256 64 1
+	./$(TARGET) 7 7 7 0.0 256 4 1
 
 bench_size: all
-	./$(TARGET) 200 200 200 0.99 256 64
-	./$(TARGET) 2000 2000 2000 0.99 256 64
-	./$(TARGET) 20000 20000 20000 0.99 256 64
+	./$(TARGET) 200 200 200 0.99 256 4
+	./$(TARGET) 2000 2000 2000 0.99 256 4
+	./$(TARGET) 20000 20000 20000 0.99 256 4
 
 bench_repeat: all
-	./$(TARGET) 2000 2000 2000 0.99 256 64
-	./$(TARGET) 2000 2000 2000 0.99 256 64
-	./$(TARGET) 2000 2000 2000 0.99 256 64
-	./$(TARGET) 2000 2000 2000 0.99 256 64
-	./$(TARGET) 2000 2000 2000 0.99 256 64
+	./$(TARGET) 2000 2000 2000 0.99 256 4
+	./$(TARGET) 2000 2000 2000 0.99 256 4
+	./$(TARGET) 2000 2000 2000 0.99 256 4
+	./$(TARGET) 2000 2000 2000 0.99 256 4
+	./$(TARGET) 2000 2000 2000 0.99 256 4
 
 n=20000
-g=0.999
+g=0.99
 tpb=256
 cmp:
 	@$(NOVEC_NOPRE_CMP)
@@ -166,3 +166,17 @@ sch:
 
 ex:
 	$(BASE) $(PRELOADFLAG) $(VECFLAG) -DSCHED_ADAPTIVE
+
+streams: clean
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) -DSCHED_ROUNDROBIN $(OMPFLAG)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 1
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 4
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 8
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 16
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 32
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 64
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 128
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 256
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 512
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 1024

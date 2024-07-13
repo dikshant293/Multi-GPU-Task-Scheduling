@@ -29,7 +29,7 @@ CFLAGS := -std=c++14 -Wall
 # Linker Flags
 LDFLAGS = -lm
 
-OPTFLAGS = -DSCHED_RANDOM
+OPTFLAGS = -DSCHED_ROUNDROBIN
 
 # GCC Compiler
 ifeq ($(COMPILER),gnu)
@@ -46,7 +46,7 @@ endif
 # LLVM Clang Compiler 
 ifeq ($(COMPILER),llvm_nv)
   CC = clang++
-  CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode 
+  CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=60 -fopenmp-cuda-mode
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}    -fopenmp-new-driver -foffload-lto 
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=120 -fopenmp-new-driver -foffload-lto -fopenmp-assume-no-thread-state
@@ -109,7 +109,7 @@ CFLAGS += -I. $(OPTFLAGS)
 OBJS = $(OBJ)
 TARGETS = $(TARGET)
 
-all: $(TARGETS)
+all: clean $(TARGETS)
 
 $(TARGET):  $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $+ $(LDFLAGS)
@@ -122,5 +122,5 @@ $(OBJ): $(SRC)
 clean:
 	rm -rf *~ *.dSYM nc.vg.* $(OBJS) $(TARGETS)
 
-run:
-	./$(TARGET) -n 1000
+run: all
+	./$(TARGET) 2000 2000 2000 0.99 256 64 1
