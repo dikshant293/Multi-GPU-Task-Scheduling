@@ -192,6 +192,20 @@ void transposeMatrix(float* matrix, int m, int n) {
     }
 }
 
+
+void multiply(data_type *d_a, data_type *d_b, data_type *d_c, int M, int N, int K, int d)
+{
+    #pragma omp target teams distribute parallel for device(d) is_device_ptr(d_a,d_b,d_c)
+    for(int x = 0;x<M*N;x++){
+        int ii = x / N, jj = x % N;
+        data_type sum = data_type();
+        for (int kk = 0; kk < K; kk++)
+            sum += d_a[ii * K + kk] * d_b[kk * N + jj];
+        d_c[ii * N + jj] = sum;
+    }
+}
+
+
 int main(int argc, char *argv[])
 {
     const int ndevs = omp_get_num_devices();
@@ -336,6 +350,12 @@ int main(int argc, char *argv[])
     printf("none 0\n");
     #endif
     
+    #if defined(PRE_TRANSFER)
+    printf("pre-transfer\t");
+    #else
+    printf("no pre-transfer\t");
+    #endif
+
     #if defined(ASYN)
     printf("asyn nowait\n");
     #else
@@ -346,17 +366,18 @@ int main(int argc, char *argv[])
     data_type * __restrict (*dev_pointers)[3];
     dev_pointers = (data_type *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
 
-    printf("Max teams: %d\n",omp_get_max_teams());
     start_timer();
     #pragma omp parallel for shared(dev_pointers)
     for(int d=0;d<ndevs;d++){
-        dev_pointers[d][0] = (data_type *)omp_target_alloc(a_size * sizeof(data_type), d);
         dev_pointers[d][1] = (data_type *)omp_target_alloc(b_size * sizeof(data_type), d);
-        dev_pointers[d][2] = (data_type *)omp_target_alloc(c_size * sizeof(data_type), d);
-
-        omp_target_memcpy(dev_pointers[d][0], a, a_size * sizeof(data_type), 0, 0, d, host_id);
         omp_target_memcpy(dev_pointers[d][1], b, b_size * sizeof(data_type), 0, 0, d, host_id);
+
+        #if defined(PRE_TRANSFER) 
+        dev_pointers[d][0] = (data_type *)omp_target_alloc(a_size * sizeof(data_type), d);
+        omp_target_memcpy(dev_pointers[d][0], a, a_size * sizeof(data_type), 0, 0, d, host_id);
+        dev_pointers[d][2] = (data_type *)omp_target_alloc(c_size * sizeof(data_type), d);
         omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(data_type), 0, 0, d, host_id);
+        #endif
     }
     printf("copy done, starting mul\n");
     // #pragma omp parallel
@@ -377,7 +398,17 @@ int main(int argc, char *argv[])
                 // set up work needed for the firing of task[i],
                 // thread picks a device for its current task
                 // (or defers the decision by not assigning to chosen[i])
-
+                
+                int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
+                int nRows = end-start;
+                int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
+            
+                m=nRows; n=N; k=K;
+                a_start = start*K; b_start = 0;   c_start = start*N;
+                a_items = nRows*K; b_items = K*N; c_items = nRows*N;
+                
+                const int NNsq = c_items;
+                
                 #if defined(SCHED_ROUNDROBIN)
                 const int dev = gpu_scheduler_static_rr(i, ndevs);
                 #elif defined(SCHED_ADAPTIVE)
@@ -398,15 +429,6 @@ int main(int argc, char *argv[])
                 success[i] = 0;
 
                 int d = chosen[i]; 
-                int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
-                int nRows = end-start;
-                int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
-            
-                m=nRows; n=N; k=K;
-                a_start = start*K; b_start = 0;   c_start = start*N;
-                a_items = nRows*K; b_items = K*N; c_items = nRows*N;
-                
-                const int NNsq = c_items;
 /*#pragma omp task depend(in: chosen[i], inout: success[i])// name: fire [i]
       {
     int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
@@ -417,10 +439,18 @@ int main(int argc, char *argv[])
                 // #pragma omp task depend(in : chosen[i]) depend(inout : success[i])
                 // {
                     // int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-                    data_type *d_a = dev_pointers[d][0];
-                    data_type *d_b = dev_pointers[d][1];
-                    data_type *d_c = dev_pointers[d][2];
-    
+                    data_type *d_a,*d_b,*d_c;
+                    d_b = dev_pointers[d][1];
+
+                    #if defined(PRE_TRANSFER)
+                    d_a = dev_pointers[d][0];
+                    d_c = dev_pointers[d][2];
+                    #else
+                    d_a = (data_type *)omp_target_alloc(a_items * sizeof(data_type), d);
+                    omp_target_memcpy(d_a, a+a_start, a_items * sizeof(data_type), 0, 0, d, host_id);
+                    d_c = (data_type *)omp_target_alloc(c_items * sizeof(data_type), d);
+                    omp_target_memcpy(d_c, c+c_start, c_items * sizeof(data_type), 0, 0, d, host_id);
+                    #endif
                     // #if defined(ASYN)
                     // #pragma omp target device(d) \
                     // map(to : a[0 : a_size], b[0 : b_size]) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1], c[0 : c_size]) nowait
@@ -446,18 +476,35 @@ int main(int argc, char *argv[])
                             // printf("GPU %d: task num = %d start = %d end = %d size = %d\n",omp_get_device_num(),i,start,end,nRows);
                             // for (int ii = start; ii < end; ii++){
                             //     for (int jj = 0; jj < N; jj++){
-                                #pragma omp target teams distribute parallel for num_teams(128) device(d) is_device_ptr(d_a,d_b,d_c) nowait
-                                for(int x = c_start;x<c_start+c_items;x++){
-                                    int ii = x / n, jj = x % n;
-                                    data_type sum = data_type();
-                                    for (int kk = 0; kk < K; kk++)
-                                        sum += d_a[ii * K + kk] * d_b[kk * N + jj];
-                                    d_c[ii * N + jj] = sum;
-                                }
+                                // printf("start task %d\n",i);
+                                #if defined(PRE_TRANSFER)
+                                multiply(d_a+a_start,d_b+b_start,d_c+c_start,m,n,k,d);
+                                #else
+                                multiply(d_a,d_b+b_start,d_c,m,n,k,d);
+                                #endif
+                                // #pragma omp target teams distribute parallel for num_teams(128) device(d) is_device_ptr(d_a,d_b,d_c)
+                                // for(int x = c_start;x<c_start+c_items;x++){
+                                //     int ii = x / n, jj = x % n;
+                                //     data_type sum = data_type();
+                                //     for (int kk = 0; kk < K; kk++)
+                                //         sum += d_a[ii * K + kk] * d_b[kk * N + jj];
+                                //     d_c[ii * N + jj] = sum;
+                                // }
+
+
+
+                                // printf("end task %d\n",i);
                             // }
                         
                         success[i] = 1; // Note to Mathi: coudl this be outside ifdef?
+                        // omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(data_type), 0, 0, host_id, d);
+                        omp_target_memcpy(c+c_start, d_c, c_items * sizeof(data_type), 0, 0, host_id, d);
                         // #endif
+                        #if not defined(PRE_TRANSFER)
+                        omp_target_free(d_a, d);
+                        omp_target_free(d_c, d);
+                        #endif
+                        
                         // printf("task %d done\n",i);
                 //     }                    // end target
                 // }                        // end task
@@ -484,26 +531,23 @@ int main(int argc, char *argv[])
         
     // } // end parallel
     #pragma omp taskwait
-    printf("multiplication done.\n");
+    // printf("multiplication done.\n");
     for(int d=0;d<ndevs;d++){
-        data_type *d_a = dev_pointers[d][0];
-        data_type *d_b = dev_pointers[d][1];
-        data_type *d_c = dev_pointers[d][2];
-        omp_target_memcpy(c_cpu, d_c, c_size * sizeof(data_type), 0, 0, host_id, d);
-        
-        #pragma omp parallel for
-        for(int i=0;i<c_size;i++){
-            // printf("CPU %d\n",omp_get_thread_num());
-            c[i] += c_cpu[i];
-            c_cpu[i] = 0.0;
-        }
-        omp_target_free(d_a, d);
-        omp_target_free(d_b, d);
-        omp_target_free(d_c, d);
+        omp_target_free(dev_pointers[d][1], d);
+        #if defined(PRE_TRANSFER)
+        omp_target_free(dev_pointers[d][0], d);
+        omp_target_free(dev_pointers[d][2], d);
+        #endif
     }
 
     int check = 0;
     end_timer("GPU Multiplication");
+
+    std::vector<int> percent(ndevs,0);
+    for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
+    for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
+    printf("\n");
+
     int lastFail = 0;
     for (int i = 0; i < numTasks; i++)
     {
@@ -545,7 +589,6 @@ int main(int argc, char *argv[])
         }
         printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
     }
-    
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
 
     free(a);
@@ -557,5 +600,6 @@ int main(int argc, char *argv[])
     free(taskWork);
     free(taskWorkSquared);
     free(success);
+    printf("DONE\n\n");
     return 0;
 } // end main

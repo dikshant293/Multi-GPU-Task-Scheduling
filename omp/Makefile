@@ -24,7 +24,7 @@ TARGET = t2g_$(COMPILER)
 #===============================================================================
 
 # Standard Flags
-CFLAGS := -std=c++14 -Wall
+CFLAGS := -std=c++20 -Wall
 
 # Linker Flags
 LDFLAGS = -lm
@@ -104,12 +104,20 @@ endif
 # Targets to Build
 #===============================================================================
 
-CFLAGS += -I. $(OPTFLAGS)
+CFLAGS += -I.
 
 OBJS = $(OBJ)
 TARGETS = $(TARGET)
 
-all: clean $(TARGETS)
+PRELOADFLAG = -DPRE_TRANSFER
+BASE = $(CC) $(SRC) $(CFLAGS) -o $(TARGET) $(LDFLAGS)
+NOVEC_NOPRE_CMP = $(BASE) $(SCHFLAG)
+VEC_NOPRE_CMP = $(BASE) $(SCHFLAG) $(VECFLAG)
+NOVEC_PRE_CMP = $(BASE) $(SCHFLAG)
+VEC_PRE_CMP = $(BASE) $(SCHFLAG) $(VECFLAG) $(PRELOADFLAG)
+
+all: clean
+	$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
 
 $(TARGET):  $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $+ $(LDFLAGS)
@@ -122,5 +130,48 @@ $(OBJ): $(SRC)
 clean:
 	rm -rf *~ *.dSYM nc.vg.* $(OBJS) $(TARGETS)
 
-run: all
+run: clean
+	$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
 	./$(TARGET) 2000 2000 2000 0.99 256 64 1
+	$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) 2000 2000 2000 0.99 256 64 1
+
+n=20000
+g=0.999
+tpb=256
+
+load: clean
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+
+sch:
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@rm -rf cmp $(TARGET)
+
+sch-nopre:
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_DYNAMIC
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_ADAPTIVE
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@rm -rf cmp $(TARGET)

@@ -184,7 +184,7 @@ void transposeMatrix(float* matrix, int m, int n) {
 }
 
 // Kernel for matrix-matrix multiplication
-__global__ void multiply_kernel(float *A, float *B, float *C, int rowStart, int M, int N, int K)
+__global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int K)
 {
     // int i = blockIdx.y * blockDim.y + threadIdx.y;
     // int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -342,7 +342,6 @@ std::vector<int> generateEqualChunkStartIndices(int n, int m) {
     return startIndexes;
 }
 
-
 std::vector<int> generateRandomChunkStartIndices(int n, int m) {
     std::vector<int> chunkSizes;
     std::vector<int> startIndexes;
@@ -440,7 +439,7 @@ int main(int argc, char **argv)
     int numTasks = CEIL(M,rowsPerTask);
     // streams_per_gpu = CEIL(numTasks,ndevs);
     // streams_per_gpu = 4;
-    numThreadsPerBlock = CEIL(1024,streams_per_gpu);
+    // numThreadsPerBlock = CEIL(1024,streams_per_gpu);
     printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
@@ -490,8 +489,48 @@ int main(int argc, char **argv)
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
 
+    
+
+    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
+    
+    // startIndexes = generateUniformChunkStartIndices(M, numTasks);
+    // startIndexes = generateRandomChunkStartIndices(M, numTasks);
+
+    // std::cout << "Starting indices of chunks: ";
+    // for (int index : startIndexes) {
+    //     std::cout << index << " ";
+    // }
+    // std::cout << std::endl;
+    
+    // Calculate chunk sizes from start indices
+    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
+
+    calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
+
+    std::vector<float*> d_a_global(ndevs), d_b_global(ndevs), d_c_global(ndevs);
+
+    std::vector<std::thread> threads;
+
+    transposeMatrix(b,K,N);
+    
+    #if defined(VECTORIZE)
+    printf("vectorized,\t");
+    #else
+    printf("non-vectorized,\t");
+    #endif
+
+    #if defined(USEOPENMP)
+    printf("openMP,\t");
+    #else
+    printf("non-openMP,\t");
+    #endif
+
+
+    start_timer();
+
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
+    #pragma omp parallel for
     for(int d=0;d<ndevs;d++){
         cudaSetDevice(d);
         for(int s=0;s<streams_per_gpu;s++)
@@ -515,43 +554,6 @@ int main(int argc, char **argv)
     #endif
         return temp;
     };
-
-    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
-    
-    // startIndexes = generateUniformChunkStartIndices(M, numTasks);
-    // startIndexes = generateRandomChunkStartIndices(M, numTasks);
-
-    // std::cout << "Starting indices of chunks: ";
-    // for (int index : startIndexes) {
-    //     std::cout << index << " ";
-    // }
-    // std::cout << std::endl;
-    
-    // Calculate chunk sizes from start indices
-    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
-
-    calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
-
-    std::vector<float*> d_b_global(ndevs);
-
-    std::vector<std::thread> threads;
-
-    transposeMatrix(b,K,N);
-    
-    #if defined(VECTORIZE)
-    printf("vectorized,\t");
-    #else
-    printf("non-vectorized,\t");
-    #endif
-
-    #if defined(USEOPENMP)
-    printf("openMP,\t");
-    #else
-    printf("non-openMP,\t");
-    #endif
-
-
-    start_timer();
 
     #if defined(PRE_TRANSFER)
     printf("PRE TRANSFER\n");
@@ -649,14 +651,12 @@ int main(int argc, char **argv)
             // dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
             dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
             dim3 threadsPerBlock(numThreadsPerBlock,1);
-            // dim3 blocksPerGrid(1,1);
-            // dim3 threadsPerBlock(1,1);
             // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
             
             #if defined(PRE_TRANSFER)
-            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b_global[d],d_c,start,m,n,k);
+            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b_global[d],d_c,m,n,k);
             #else
-            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b,d_c,start,m,n,k);
+            multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b,d_c,m,n,k);
             #endif
             cudaMemcpyAsync(c+c_start,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost,stream);
 
@@ -744,6 +744,7 @@ int main(int argc, char **argv)
         c_cpu = (float*)malloc(c_size*sizeof(float));
         start_timer();
         printf("GPU Done... now checking correctness\n");
+        #pragma omp parallel for
         for (int ii = 0; ii < M; ii++)
             for (int jj = 0; jj < N; jj++){
                 c_cpu[ii * N + jj] = 0.0;

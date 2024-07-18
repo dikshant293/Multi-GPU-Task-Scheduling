@@ -124,24 +124,26 @@ bench_repeat: all
 	./$(TARGET) 2000 2000 2000 0.99 256 4
 
 n=20000
-g=0.99
-tpb=256
+g=0.999
+tpb=1024
+strm=4
+
 cmp:
 	@$(NOVEC_NOPRE_CMP)
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(NOVEC_PRE_CMP)
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(VEC_NOPRE_CMP)
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(VEC_PRE_CMP)
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@rm -rf cmp $(TARGET)
 
 omp:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) -DSCHED_ROUNDROBIN $(OMPFLAG)
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 
 # -DSCHED_ROUNDROBIN
 # -DSCHED_DYNAMIC
@@ -151,17 +153,33 @@ omp:
 # -DSCHED_ADAPTIVE2
 sch:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@rm -rf cmp $(TARGET)
+
+
+sch-nopre:
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
+	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@rm -rf cmp $(TARGET)
 
 ex:
