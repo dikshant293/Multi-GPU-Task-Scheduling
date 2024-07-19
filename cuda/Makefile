@@ -166,6 +166,19 @@ sch:
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) $(strm)
 	@rm -rf cmp $(TARGET)
 
+	
+gran:
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) 0.0 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.1 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.5 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.9 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.99 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.999 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.9999 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.99999 $(tpb) $(strm)
+	@rm -rf cmp $(TARGET)
+
 
 sch-nopre:
 	@$(BASE) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
@@ -190,11 +203,11 @@ streams: clean
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 1
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 2
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 4
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 6
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 8
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 12
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 16
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 24
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 32
+	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 48
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 64
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 128
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 256
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 512
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb) 1024

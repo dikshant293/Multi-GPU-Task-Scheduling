@@ -265,7 +265,7 @@ int main(int argc, char *argv[])
     // int streams_per_gpu = CEIL(numTasks,ndevs);
     int streams_per_gpu = 32;
     numThreadsPerBlock = CEIL(1024,streams_per_gpu);
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
     data_type *a = (data_type *)malloc(a_size * sizeof(data_type));

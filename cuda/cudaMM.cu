@@ -440,7 +440,7 @@ int main(int argc, char **argv)
     // streams_per_gpu = CEIL(numTasks,ndevs);
     // streams_per_gpu = 4;
     // numThreadsPerBlock = CEIL(1024,streams_per_gpu);
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%0.2lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
     #if defined(SCHED_ROUNDROBIN)
@@ -511,7 +511,6 @@ int main(int argc, char **argv)
 
     std::vector<std::thread> threads;
 
-    transposeMatrix(b,K,N);
     
     #if defined(VECTORIZE)
     printf("vectorized,\t");
@@ -524,13 +523,12 @@ int main(int argc, char **argv)
     #else
     printf("non-openMP,\t");
     #endif
-
-
+    
     start_timer();
 
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static,1)
     for(int d=0;d<ndevs;d++){
         cudaSetDevice(d);
         for(int s=0;s<streams_per_gpu;s++)
@@ -554,6 +552,8 @@ int main(int argc, char **argv)
     #endif
         return temp;
     };
+    
+    transposeMatrix(b,K,N);
 
     #if defined(PRE_TRANSFER)
     printf("PRE TRANSFER\n");
@@ -647,10 +647,10 @@ int main(int argc, char **argv)
             
             
             int blk_x = min(MAX_TPB,n), blk_y = min(MAX_TPB,m);
-            // dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
-            // dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
-            dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
-            dim3 threadsPerBlock(numThreadsPerBlock,1);
+            dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
+            dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
+            // dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
+            // dim3 threadsPerBlock(numThreadsPerBlock,1);
             // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
             
             #if defined(PRE_TRANSFER)
@@ -730,8 +730,8 @@ int main(int argc, char **argv)
     
     joinThreads(threads);
 
+    transposeMatrix(b,N,K);
     end_timer("GPU multiplication");
-    transposeMatrix(b,K,N);
 
     std::vector<int> percent(ndevs,0);
     for(int i=0;i<numTasks;i++) percent[chosen[i]]++;

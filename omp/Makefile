@@ -146,6 +146,18 @@ load: clean
 	@$(BASE) -DSCHED_ROUNDROBIN
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
 
+gran:
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) 0.0 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.1 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.5 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.9 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.99 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.999 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.9999 $(tpb) $(strm)
+	./$(TARGET) $(n) $(n) $(n) 0.99999 $(tpb) $(strm)
+	@rm -rf cmp $(TARGET)
+
 sch:
 	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
 	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
