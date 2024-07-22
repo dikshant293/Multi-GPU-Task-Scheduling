@@ -44,7 +44,7 @@
 #define ABS(x) (((x) < (0)) ? (-x) : (x))
 #define EPSILON 1e-6
 
-using data_type = float;
+// using data_type = float;
 
 inline unsigned gpu_scheduler_static_rr(int taskID, int ngpus)
 {
@@ -163,7 +163,7 @@ inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ngpus)
     return chosen;
 }
 
-void printMatrix(data_type *mat, int m, int n){
+void printMatrix(float *mat, int m, int n){
     for(int i=0;i<m;i++){
         for(int j=0;j<n;j++){
             printf("%lf ",mat[i*n+j]);
@@ -193,12 +193,12 @@ void transposeMatrix(float* matrix, int m, int n) {
 }
 
 
-void multiply(data_type *d_a, data_type *d_b, data_type *d_c, int M, int N, int K, int d)
+void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int d)
 {
     #pragma omp target teams distribute parallel for device(d) is_device_ptr(d_a,d_b,d_c)
     for(int x = 0;x<M*N;x++){
         int ii = x / N, jj = x % N;
-        data_type sum = data_type();
+        float sum = float();
         for (int kk = 0; kk < K; kk++)
             sum += d_a[ii * K + kk] * d_b[kk * N + jj];
         d_c[ii * N + jj] = sum;
@@ -268,10 +268,9 @@ int main(int argc, char *argv[])
     printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
 
-    data_type *a = (data_type *)malloc(a_size * sizeof(data_type));
-    data_type *b = (data_type *)malloc(b_size * sizeof(data_type));
-    data_type *c = (data_type *)malloc(c_size * sizeof(data_type));
-    data_type *c_cpu = (data_type *)malloc(c_size * sizeof(data_type));
+    float *a = (float *)malloc(a_size * sizeof(float));
+    float *b = (float *)malloc(b_size * sizeof(float));
+    float *c = (float *)malloc(c_size * sizeof(float));
 
     int *taskWork = (int *)malloc(sizeof(int) * numTasks);
     int *taskWorkSquared = (int *)malloc(sizeof(int) * numTasks);
@@ -291,9 +290,6 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
-
-    for (int i = 0; i < c_size; i++)
-        c_cpu[i] = 0.0;
 
     int ctaskwork;
 //     for (int i = 0; i < numTasks; i++)
@@ -363,20 +359,20 @@ int main(int argc, char *argv[])
     #endif
 
     int host_id = omp_get_initial_device();
-    data_type * __restrict (*dev_pointers)[3];
-    dev_pointers = (data_type *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
+    float * __restrict (*dev_pointers)[3];
+    dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
 
     start_timer();
     #pragma omp parallel for shared(dev_pointers)
     for(int d=0;d<ndevs;d++){
-        dev_pointers[d][1] = (data_type *)omp_target_alloc(b_size * sizeof(data_type), d);
-        omp_target_memcpy(dev_pointers[d][1], b, b_size * sizeof(data_type), 0, 0, d, host_id);
+        dev_pointers[d][1] = (float *)omp_target_alloc(b_size * sizeof(float), d);
+        omp_target_memcpy(dev_pointers[d][1], b, b_size * sizeof(float), 0, 0, d, host_id);
 
         #if defined(PRE_TRANSFER) 
-        dev_pointers[d][0] = (data_type *)omp_target_alloc(a_size * sizeof(data_type), d);
-        omp_target_memcpy(dev_pointers[d][0], a, a_size * sizeof(data_type), 0, 0, d, host_id);
-        dev_pointers[d][2] = (data_type *)omp_target_alloc(c_size * sizeof(data_type), d);
-        omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(data_type), 0, 0, d, host_id);
+        dev_pointers[d][0] = (float *)omp_target_alloc(a_size * sizeof(float), d);
+        omp_target_memcpy(dev_pointers[d][0], a, a_size * sizeof(float), 0, 0, d, host_id);
+        dev_pointers[d][2] = (float *)omp_target_alloc(c_size * sizeof(float), d);
+        omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(float), 0, 0, d, host_id);
         #endif
     }
     printf("copy done, starting mul\n");
@@ -439,17 +435,17 @@ int main(int argc, char *argv[])
                 // #pragma omp task depend(in : chosen[i]) depend(inout : success[i])
                 // {
                     // int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-                    data_type *d_a,*d_b,*d_c;
+                    float *d_a,*d_b,*d_c;
                     d_b = dev_pointers[d][1];
 
                     #if defined(PRE_TRANSFER)
                     d_a = dev_pointers[d][0];
                     d_c = dev_pointers[d][2];
                     #else
-                    d_a = (data_type *)omp_target_alloc(a_items * sizeof(data_type), d);
-                    omp_target_memcpy(d_a, a+a_start, a_items * sizeof(data_type), 0, 0, d, host_id);
-                    d_c = (data_type *)omp_target_alloc(c_items * sizeof(data_type), d);
-                    omp_target_memcpy(d_c, c+c_start, c_items * sizeof(data_type), 0, 0, d, host_id);
+                    d_a = (float *)omp_target_alloc(a_items * sizeof(float), d);
+                    omp_target_memcpy(d_a, a+a_start, a_items * sizeof(float), 0, 0, d, host_id);
+                    d_c = (float *)omp_target_alloc(c_items * sizeof(float), d);
+                    omp_target_memcpy(d_c, c+c_start, c_items * sizeof(float), 0, 0, d, host_id);
                     #endif
                     // #if defined(ASYN)
                     // #pragma omp target device(d) \
@@ -485,7 +481,7 @@ int main(int argc, char *argv[])
                                 // #pragma omp target teams distribute parallel for num_teams(128) device(d) is_device_ptr(d_a,d_b,d_c)
                                 // for(int x = c_start;x<c_start+c_items;x++){
                                 //     int ii = x / n, jj = x % n;
-                                //     data_type sum = data_type();
+                                //     float sum = float();
                                 //     for (int kk = 0; kk < K; kk++)
                                 //         sum += d_a[ii * K + kk] * d_b[kk * N + jj];
                                 //     d_c[ii * N + jj] = sum;
@@ -497,8 +493,8 @@ int main(int argc, char *argv[])
                             // }
                         
                         success[i] = 1; // Note to Mathi: coudl this be outside ifdef?
-                        // omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(data_type), 0, 0, host_id, d);
-                        omp_target_memcpy(c+c_start, d_c, c_items * sizeof(data_type), 0, 0, host_id, d);
+                        // omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(float), 0, 0, host_id, d);
+                        omp_target_memcpy(c+c_start, d_c, c_items * sizeof(float), 0, 0, host_id, d);
                         // #endif
                         #if not defined(PRE_TRANSFER)
                         omp_target_free(d_a, d);
@@ -565,6 +561,10 @@ int main(int argc, char *argv[])
     // printf("Total number of CPU threads=%d\n", omp_get_num_threads());
     if(check_result){
         printf("GPU Done... now checking correctness\n");
+
+        float *c_cpu = (float *)malloc(c_size * sizeof(float));
+        for (int i = 0; i < c_size; i++)
+        c_cpu[i] = 0.0;
         start_timer();
         #pragma omp parallel for
         for (int ii = 0; ii < M; ii++)
@@ -576,8 +576,8 @@ int main(int argc, char *argv[])
         for (int i = 0; i < M; i++)
         {
             for (int j = 0; j < N; j++){
-                data_type x = c[i * N + j], y = c_cpu[i * N + j];
-                if (x != y && ABS(x - y) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
+                float x = c[i * N + j], y = c_cpu[i * N + j];
+                if (x != y && ABS(x - y) > EPSILON) // float precision comparision upto 10^-6 for types like doubles
                 {
                     printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
                     flag = false;
@@ -588,13 +588,13 @@ int main(int argc, char *argv[])
                 break;
         }
         printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
+        free(c_cpu);
     }
     // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
 
     free(a);
     free(b);
     free(c);
-    free(c_cpu);
     free(devices);
     free(chosen);
     free(taskWork);

@@ -46,7 +46,7 @@ endif
 # LLVM Clang Compiler 
 ifeq ($(COMPILER),llvm_nv)
   CC = clang++
-  CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized
+  CFLAGS += -fopenmp -ffast-math -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=60 -fopenmp-cuda-mode
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}    -fopenmp-new-driver -foffload-lto 
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=120 -fopenmp-new-driver -foffload-lto -fopenmp-assume-no-thread-state
@@ -62,7 +62,7 @@ endif
 ifeq ($(COMPILER),nvhpc)
   CC = nvc++
   #CFLAGS += -mp=gpu -gpu=managed
-  CFLAGS += -mp=gpu -gpu=${SM}
+  CFLAGS += -mp=gpu -gpu=${SM} --diag_suppress declared_but_not_referenced --diag_suppress set_but_not_used
   #CFLAGS += -mp=gpu -Minfo=mp -gpu=${SM}
 endif
 
