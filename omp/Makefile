@@ -46,7 +46,7 @@ endif
 # LLVM Clang Compiler 
 ifeq ($(COMPILER),llvm_nv)
   CC = clang++
-  CFLAGS += -fopenmp -ffast-math -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized
+  CFLAGS += -fopenmp -ffast-math -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized -Ofast -openmp-simd -openmp-extensions -foffload-lto -fopenmp-assume-no-thread-state -march=native -fno-stack-protector -funroll-loops -fomit-frame-pointer -mavx2 -ffp-contract=fast -fno-signed-zeros -freciprocal-math -fmerge-all-constants
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=60 -fopenmp-cuda-mode
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}    -fopenmp-new-driver -foffload-lto 
   #CFLAGS += -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target --cuda-path=${OLCF_CUDA_ROOT}  -Xcuda-ptxas --maxrregcount=120 -fopenmp-new-driver -foffload-lto -fopenmp-assume-no-thread-state
@@ -117,7 +117,7 @@ NOVEC_PRE_CMP = $(BASE) $(SCHFLAG)
 VEC_PRE_CMP = $(BASE) $(SCHFLAG) $(VECFLAG) $(PRELOADFLAG)
 
 all: clean
-	$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
+	$(BASE) -DSCHED_ROUNDROBIN
 
 $(TARGET):  $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $+ $(LDFLAGS)
@@ -132,58 +132,90 @@ clean:
 
 run: clean
 	$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) 2000 2000 2000 0.99 256 64 1
+	./$(TARGET) 20 20 20 0.9 0 1
 	$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) 2000 2000 2000 0.99 256 64 1
+	./$(TARGET) 20 20 20 0.9 0 1
+	$(BASE) -DSCHED_ROUNDROBIN -DVECTORIZE
+	./$(TARGET) 20 20 20 0.9 0 1
 
 n=20000
-g=0.999
+g=0.99
 tpb=256
 
 load: clean
 	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g)
 	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) $(g)
 
 gran:
 	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) 0.0 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.1 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.5 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.9 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.99 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.999 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.9999 $(tpb) $(strm)
-	./$(TARGET) $(n) $(n) $(n) 0.99999 $(tpb) $(strm)
-	@rm -rf cmp $(TARGET)
-
-sch:
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.5
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 0.99999
 	@rm -rf cmp $(TARGET)
 
 sch-nopre:
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) -DSCHED_DYNAMIC
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) -DSCHED_ADAPTIVE
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g) $(tpb)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g)
 	@rm -rf cmp $(TARGET)
+
+sch:
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@rm -rf cmp $(TARGET)
+
+vec:
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_ROUNDROBIN -DVECTORIZE
+	./$(TARGET) $(n) $(n) $(n) $(g)
+
+
+cmp-sch:
+	@echo Equal
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g)
+	@echo
+	@echo Uniform	
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) 1
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g) 1
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g) 1
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g) 1
+	@echo
+	@echo Random
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) $(g) 2
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) $(g) 2
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) $(g) 2
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) $(g) 2

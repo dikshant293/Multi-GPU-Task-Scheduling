@@ -397,13 +397,14 @@ int main(int argc, char **argv)
     int timestep = 1;
     // int probSize = MAXWORK;
     int numThreads = 64;
-    int numThreadsPerBlock = 256;
+    int numThreadsPerBlock = 1024;
     // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
     int streams_per_gpu = 4;
     // srand((unsigned)time(NULL));
     float granularity = 0.9;
+    int chunk = 0;
     if (argc <= 1)
     {
         printf("Usage bench_works [m] [n] [k] [granularity]\n");
@@ -427,21 +428,16 @@ int main(int argc, char **argv)
             }
         }
         if (argc > 5)
-            numThreadsPerBlock = atoi(argv[5]);
+            chunk = atoi(argv[5]);
         if (argc > 6)
-            streams_per_gpu = atoi(argv[6]);
-        if (argc > 7)
             check_result = 1;
     }
     int a_size = M * K, b_size = K * N, c_size = M * N;
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
     int numTasks = CEIL(M,rowsPerTask);
-    // streams_per_gpu = CEIL(numTasks,ndevs);
-    // streams_per_gpu = 4;
-    // numThreadsPerBlock = CEIL(1024,streams_per_gpu);
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
-            M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreadsPerBlock=%d] [streams_per_gpu=%d]\n",
+            M, N, K, numTasks, granularity, rowsPerTask, numThreadsPerBlock, streams_per_gpu);
 
     #if defined(SCHED_ROUNDROBIN)
     printf("gpu_scheduler_static_rr,\t");
@@ -457,12 +453,6 @@ int main(int argc, char **argv)
     printf("gpu_scheduler_dynamic_occ2,\t");
     #else
     printf("none 0\n");
-    #endif
-
-    #if defined(ASYN)
-    printf("asyn nowait\n");
-    #else
-    printf("syn with wait\n");
     #endif
 
     float *a,*b,*c;
@@ -493,18 +483,11 @@ int main(int argc, char **argv)
 
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
     
-    // startIndexes = generateUniformChunkStartIndices(M, numTasks);
-    // startIndexes = generateRandomChunkStartIndices(M, numTasks);
-
-    // std::cout << "Starting indices of chunks: ";
-    // for (int index : startIndexes) {
-    //     std::cout << index << " ";
-    // }
-    // std::cout << std::endl;
-    
-    // Calculate chunk sizes from start indices
+    if(chunk==1) startIndexes = generateUniformChunkStartIndices(M, numTasks);
+    if(chunk==2) startIndexes = generateRandomChunkStartIndices(M, numTasks);
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
 
+    printf("Task Sizes: ");
     calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
 
     std::vector<float*> d_a_global(ndevs), d_b_global(ndevs), d_c_global(ndevs);
@@ -524,9 +507,6 @@ int main(int argc, char **argv)
     printf("non-openMP,\t");
     #endif
     
-    start_timer();
-
-    // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
     #pragma omp parallel for schedule(static,1)
     for(int d=0;d<ndevs;d++){
@@ -553,6 +533,8 @@ int main(int argc, char **argv)
         return temp;
     };
     
+
+    start_timer();
     transposeMatrix(b,K,N);
 
     #if defined(PRE_TRANSFER)
@@ -733,6 +715,7 @@ int main(int argc, char **argv)
     transposeMatrix(b,N,K);
     end_timer("GPU multiplication");
 
+
     std::vector<int> percent(ndevs,0);
     for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
     for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
@@ -782,5 +765,5 @@ int main(int argc, char **argv)
         for(auto &str: dev)
             cudaStreamDestroy(str);
 
-    printf("DONE\n\n");
+    printf("\n");
 }

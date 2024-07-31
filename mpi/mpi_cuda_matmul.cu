@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include <cuda.h>
-#include <cuda_runtime.h>
 #include <assert.h>
 #include <vector>
 #include <iostream>
@@ -19,6 +17,13 @@
 #include <numeric>
 #include <cmath>
 #include <ctime>
+
+#if defined(USEOPENMP)
+#include <omp.h>
+#else
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
 
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -77,7 +82,6 @@ __host__ inline cudaError_t checkCuda(cudaError_t status)
     }
     return status;
 }
-
 
 void printMatrix(float *mat, int m, int n){
     for(int i=0;i<m;i++){
@@ -143,6 +147,31 @@ void checkMPIError(int status) {
     }
 }
 
+inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int a_items=0, int b_items=0, int c_items=0)
+{
+    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,1024)) thread_limit(1024) schedule (static, 1) map(to:d_a[0:a_items],d_b[0:b_items]) map(tofrom:d_c[0:c_items])
+    for(int x = 0;x<M*N;x++){
+        int ii = x / N, jj = x % N;
+        float sum = float();
+        #if defined(VECTORIZE)
+        auto a = reinterpret_cast<float4*>(&d_a[ii * K]);
+        auto b = reinterpret_cast<float4*>(&d_b[jj * K]);
+        for (int k = 0; k < K/4; k++)
+        {
+            sum += a->x*b->x + a->y*b->y + a->z*b->z + a->w*b->w;
+            a++;
+            b++;
+        }
+        
+        #else
+        for (int kk = 0; kk < K; kk++){
+            // sum += d_a[ii * K + kk] * d_b[kk * N + jj];
+            sum += d_a[ii * K + kk] * d_b[jj * K + kk];
+        }
+        #endif
+        d_c[ii * N + jj] = sum;
+    }
+}
 
 void transposeMatrix(float* matrix, int m, int n) {
     for (int i = 0; i < m; ++i) {
@@ -185,12 +214,9 @@ int main(int argc, char **argv) {
 
     int numRowsPerRank = CEIL(M,world_size);
     
-
-    
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, world_size);;
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
 
-    cudaSetDevice(world_rank%ndevs);
     checkMPIError(MPI_Barrier(MPI_COMM_WORLD));
         
     int start = startIndexes[world_rank], end = (world_rank==world_size-1 ? M : startIndexes[world_rank+1]);
@@ -204,12 +230,15 @@ int main(int argc, char **argv) {
 
     float *a,*b,*c;
     if (world_rank == 0) {
-
+        #if defined(USEOPENMP)
+        a = (float*)malloc(a_size*sizeof(float));
+        b = (float*)malloc(b_size*sizeof(float));
+        c = (float*)malloc(c_size*sizeof(float));
+        #else
         checkCuda(cudaMallocHost(&a,a_size*sizeof(float)));
         checkCuda(cudaMallocHost(&b,b_size*sizeof(float)));
         checkCuda(cudaMallocHost(&c,c_size*sizeof(float)));
-
-        // initialize
+        #endif
 
         for (int i = 0; i < a_size; i++)
             // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
@@ -226,7 +255,14 @@ int main(int argc, char **argv) {
         
         printf("bench_works [m=%d] [n=%d] [k=%d]\n",M, N, K);
         #if defined(VECTORIZE)
-        printf("vectorized\n");   
+        printf("vectorized\n");
+        #else
+        printf("non vectorized\n");   
+        #endif
+        #if defined(USEOPENMP)
+        printf("using OPENMP target offload\n");
+        #else
+        printf("using CUDA\n");
         #endif
     }
 
@@ -246,25 +282,28 @@ int main(int argc, char **argv) {
         
     }
     else{
-        
+        #if defined(USEOPENMP)
+        h_a = (float*)malloc(a_items*sizeof(float));
+        h_b = (float*)malloc(b_items*sizeof(float));
+        h_c = (float*)malloc(c_items*sizeof(float));
+        #else
         checkCuda(cudaMallocHost(&h_a,a_items*sizeof(float)));
         checkCuda(cudaMallocHost(&h_b,b_items*sizeof(float)));
         checkCuda(cudaMallocHost(&h_c,c_items*sizeof(float)));
+        #endif
 
         checkMPIError(MPI_Recv(h_a,a_items,MPI_FLOAT,0,1,MPI_COMM_WORLD,&stat));
         checkMPIError(MPI_Recv(h_b,b_items,MPI_FLOAT,0,2,MPI_COMM_WORLD,&stat));
         checkMPIError(MPI_Recv(h_c,c_items,MPI_FLOAT,0,3,MPI_COMM_WORLD,&stat));
     }
-    
-    // checkMPIError(MPI_Barrier(MPI_COMM_WORLD));
-    // int p = 2;
-    // if(world_rank==p){
-    //     printMatrix(h_a,m,k);
-    // }
-
 
     transposeMatrix(h_b,K,N);
 
+    
+
+    #if defined(USEOPENMP)
+    multiply(h_a,h_b,h_c,m,n,k,a_items,b_items,c_items);
+    #else
     float *d_a,*d_b,*d_c;
 
     cudaMalloc(&d_a,a_items*sizeof(float));
@@ -281,7 +320,6 @@ int main(int argc, char **argv) {
     dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
 
     multiply_kernel<<<blocksPerGrid,threadsPerBlock>>>(d_a,d_b,d_c,m,n,k);
-
     cudaMemcpy(h_c,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost);
 
     cudaFree(d_a);
@@ -289,20 +327,9 @@ int main(int argc, char **argv) {
     cudaFree(d_c);
 
     cudaDeviceSynchronize();
+    #endif
 
     transposeMatrix(h_b,N,K);
-    
-    // int rank = 0;
-    // while (rank < world_size) {
-    //     if (world_rank == rank) {
-    //         printf("rank %d startrow %d endrow %d a_start %d b_start %d c_start %d\n",world_rank,start,end,a_start,b_start,c_start);
-    //         printf ("Array printed by rank: %d\n", world_rank);
-    //         printMatrix(h_c,m,n);
-    //         fflush(stdout);
-    //     }
-    //     rank++;
-    //     MPI_Barrier(MPI_COMM_WORLD);
-    // }
 
     if(world_rank==0){
         h_a = a+a_start;

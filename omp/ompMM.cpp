@@ -16,6 +16,7 @@
 #include <numeric>
 #include <cmath>
 #include <ctime>
+#include <vector_types.h>
 
 // Input data distribution
 #define RANDOM_SIZED_TASKS
@@ -193,16 +194,131 @@ void transposeMatrix(float* matrix, int m, int n) {
 }
 
 
-void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int d)
+inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int d, int a_items=0, int b_items=0, int c_items=0)
 {
-    #pragma omp target teams distribute parallel for device(d) is_device_ptr(d_a,d_b,d_c)
+    #if defined(PRE_TRANSFER)
+    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,1024)) thread_limit(1024) schedule (static, 1) device(d) is_device_ptr(d_a,d_b,d_c)
+    #else
+    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,1024)) thread_limit(1024) schedule (static, 1) device(d) is_device_ptr(d_b) map(to:d_a[0:a_items]) map(tofrom:d_c[0:c_items])
+    #endif
     for(int x = 0;x<M*N;x++){
         int ii = x / N, jj = x % N;
         float sum = float();
-        for (int kk = 0; kk < K; kk++)
+        #if defined(VECTORIZE)
+        auto a = reinterpret_cast<float4*>(&d_a[ii * K]);
+        auto b = reinterpret_cast<float4*>(&d_b[jj * K]);
+        for (int k = 0; k < K/4; k++)
+        {
+            sum += a->x*b->x + a->y*b->y + a->z*b->z + a->w*b->w;
+            a++;
+            b++;
+        }
+        
+        #else
+        for (int kk = 0; kk < K; kk++){
             sum += d_a[ii * K + kk] * d_b[kk * N + jj];
+            // sum += d_a[ii * K + kk] * d_b[jj * K + kk];
+        }
+        #endif
         d_c[ii * N + jj] = sum;
     }
+}
+
+// Function to calculate mean of chunk sizes
+double calculateMean(const std::vector<int>& chunkSizes) {
+    double sum = 0.0;
+    for (int size : chunkSizes) {
+        sum += size;
+    }
+    std::cout << "Mean: " << sum / chunkSizes.size() << "\t";
+    return sum / chunkSizes.size();
+}
+
+// Function to calculate standard deviation of chunk sizes
+double calculateStandardDeviation(const std::vector<int>& chunkSizes, double mean) {
+    double sum = 0.0;
+    for (int size : chunkSizes) {
+        sum += std::pow(size - mean, 2);
+    }
+    std::cout << "Standard deviation: " << std::sqrt(sum / chunkSizes.size()) << std::endl;
+    return std::sqrt(sum / chunkSizes.size());
+}
+
+// Function to calculate chunk sizes from start indices
+std::vector<int> calculateChunkSizes(const std::vector<int>& startIndexes, int n) {
+    std::vector<int> chunkSizes;
+    for (size_t i = 0; i < startIndexes.size(); ++i) {
+        if (i == startIndexes.size() - 1) {
+            chunkSizes.push_back(n - startIndexes[i]);  // Last chunk goes to the end of the array
+        } else {
+            chunkSizes.push_back(startIndexes[i + 1] - startIndexes[i]);
+        }
+    }
+    return chunkSizes;
+}
+
+std::vector<int> generateUniformChunkStartIndices(int n, int m) {
+    std::vector<int> chunkSizes(m, 1); // Start each chunk with at least one element
+    int remainingElements = n - m;    // Elements left after giving 1 to each chunk
+
+    srand(101);
+    // Distribute the remaining elements randomly
+    for (int i = 0; i < remainingElements; ++i) {
+        int chunkIndex = rand() % m;
+        chunkSizes[chunkIndex]++;
+    }
+
+    // Calculate the starting indices
+    std::vector<int> startIndexes(m);
+    std::partial_sum(chunkSizes.begin(), chunkSizes.end() - 1, startIndexes.begin() + 1);
+
+    return startIndexes;
+}
+
+std::vector<int> generateEqualChunkStartIndices(int n, int m) {
+    std::vector<int> startIndexes;
+    int baseSize = n / m;               // Base size of each chunk
+    int remainder = n % m;              // Remainder to be distributed
+    int startIndex = 0;
+
+    // Generate starting indices based on uniform chunk sizes
+    for (int i = 0; i < m; ++i) {
+        startIndexes.push_back(startIndex);
+        int currentChunkSize = baseSize + (i < remainder ? 1 : 0);  // Distribute remainder among the first few chunks
+        startIndex += currentChunkSize;
+    }
+
+    return startIndexes;
+}
+
+std::vector<int> generateRandomChunkStartIndices(int n, int m) {
+    std::vector<int> chunkSizes;
+    std::vector<int> startIndexes;
+    int totalSize = 0;
+
+    // Seed the random number generator
+    srand(101);
+
+    // Generate random chunk sizes
+    for (int i = 0; i < m; ++i) {
+        if (i == m - 1) {
+            chunkSizes.push_back(n - totalSize); // Last chunk takes the remaining elements
+        } else {
+            int remaining = n - totalSize - (m - i - 1); // Ensure space for at least 1 element per remaining chunk
+            int chunkSize = 1 + rand() % remaining;
+            chunkSizes.push_back(chunkSize);
+            totalSize += chunkSize;
+        }
+    }
+
+    // Calculate starting indices from chunk sizes
+    int startIndex = 0;
+    for (int size : chunkSizes) {
+        startIndexes.push_back(startIndex);
+        startIndex += size;
+    }
+
+    return startIndexes;
 }
 
 
@@ -210,7 +326,6 @@ int main(int argc, char *argv[])
 {
     const int ndevs = omp_get_num_devices();
     assert(ndevs > 0);
-    printf("There are %d GPUs\n", ndevs);
     int *devices = (int *)calloc(ndevs, sizeof(*devices));
     double start_iterations, end_iterations;
     unsigned *lastGPU = NULL;
@@ -226,7 +341,7 @@ int main(int argc, char *argv[])
     // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
-
+    int chunk = 0;
     // srand((unsigned)time(NULL));
     float granularity = 0.9;
     if (argc <= 1)
@@ -252,10 +367,8 @@ int main(int argc, char *argv[])
             }
         }
         if (argc > 5)
-            numThreadsPerBlock = atoi(argv[5]);
+            chunk = atoi(argv[5]);
         if (argc > 6)
-            numThreads = atoi(argv[6]);
-        if (argc > 7)
             check_result = 1;
     }
     int a_size = M * K, b_size = K * N, c_size = M * N;
@@ -265,8 +378,8 @@ int main(int argc, char *argv[])
     // int streams_per_gpu = CEIL(numTasks,ndevs);
     int streams_per_gpu = 32;
     numThreadsPerBlock = CEIL(1024,streams_per_gpu);
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreads=%d] [numThreadsPerBlock=%d] [resMatSize=%0.2e] [streams_per_gpu=%d]\n",
-            M, N, K, numTasks, granularity, rowsPerTask, numThreads, numThreadsPerBlock, 1.0f*c_size, streams_per_gpu);
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d]\n",
+            M, N, K, numTasks, granularity, rowsPerTask);
 
     float *a = (float *)malloc(a_size * sizeof(float));
     float *b = (float *)malloc(b_size * sizeof(float));
@@ -292,39 +405,6 @@ int main(int argc, char *argv[])
         c[i] = 0.0;
 
     int ctaskwork;
-//     for (int i = 0; i < numTasks; i++)
-//     {
-// #ifdef RANDOM_SIZED_TASKS
-//         // ctaskwork =  LOWERLT + (rand()%(probSize-LOWERLT) -1);
-//         ctaskwork = 1 + (rand() % probSize - 1);
-//         // ctaskwork = probSize;
-// #else
-// #ifdef INCREASING_SIZED_TASKS
-//         ctaskwork = 1 + (rand() % probSize - 1);
-//         // ctaskwork =  LOWERLT + (rand()%(probSize-LOWERLT) -1);
-// #endif
-// #endif
-// #ifdef INCREASING_SIZED_TASKS
-//         int j = i - 1;
-//         while ((j >= 0) && (ctaskwork < taskWork[j]))
-//         {
-//             taskWork[j + 1] = taskWork[j];
-//             taskWorkSquared[j + 1] = taskWorkSquared[j];
-//             j--;
-//         }
-//         taskWork[j + 1] = ctaskwork;
-//         taskWorkSquared[j + 1] = ctaskwork * ctaskwork;
-
-// #else
-//         taskWork[i] = ctaskwork;
-//         taskWorkSquared[i] = ctaskwork * ctaskwork;
-// #endif
-//     }
-
-    // printf("taskWork[] = ");
-    // for (int i = 0; i < numTasks; i++)
-    //     printf("%d ", taskWork[i]);
-    // printf("\n");
 
     double cpu_time = 0.0;
     double task_time = 0.0;
@@ -347,20 +427,32 @@ int main(int argc, char *argv[])
     #endif
     
     #if defined(PRE_TRANSFER)
-    printf("pre-transfer\t");
+    printf("pre-transfered All\t");
     #else
-    printf("no pre-transfer\t");
+    printf("pre transfer B matrix\t");
+    #endif
+    #if defined(VECTORIZE)
+    printf("vectorized\t");
+    #else
+    printf("non vectorized\t");   
     #endif
 
-    #if defined(ASYN)
-    printf("asyn nowait\n");
-    #else
-    printf("syn with wait\n");
-    #endif
+    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
+    
+    if(chunk==1) startIndexes = generateUniformChunkStartIndices(M, numTasks);
+    if(chunk==2) startIndexes = generateRandomChunkStartIndices(M, numTasks);
+    
+    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
+    printf("Task Sizes: ");
+    calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
 
     int host_id = omp_get_initial_device();
     float * __restrict (*dev_pointers)[3];
     dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
+    
+    #if defined(VECTORIZE)
+    transposeMatrix(b,K,N);
+    #endif
 
     start_timer();
     #pragma omp parallel for shared(dev_pointers)
@@ -375,159 +467,77 @@ int main(int argc, char *argv[])
         omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(float), 0, 0, d, host_id);
         #endif
     }
-    printf("copy done, starting mul\n");
-    // #pragma omp parallel
-    // {
-        // #pragma omp single
-        // {
-            #pragma omp parallel for shared(success, nextTask, chosen) schedule(static,1)
-            // #pragma omp taskloop shared(success, nextTask, chosen) grainsize(gsz)
-            for (int i = 0; i < numTasks; i++)
-            {
-                // printf("task %d on thread %d\n",i, omp_get_thread_num());
-                // if (taskWork[i] > probSize)
-                //     taskWork[i] = probSize;
-                // const int NN = taskWork[i];
-                // const int NNsq = NN * NN;
-                // const int nl = rand() % numloop + 1;
-                // printf("i = %d nl = %d\n", i, nl);
-                // set up work needed for the firing of task[i],
-                // thread picks a device for its current task
-                // (or defers the decision by not assigning to chosen[i])
-                
-                int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
-                int nRows = end-start;
-                int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
-            
-                m=nRows; n=N; k=K;
-                a_start = start*K; b_start = 0;   c_start = start*N;
-                a_items = nRows*K; b_items = K*N; c_items = nRows*N;
-                
-                const int NNsq = c_items;
-                
-                #if defined(SCHED_ROUNDROBIN)
-                const int dev = gpu_scheduler_static_rr(i, ndevs);
-                #elif defined(SCHED_ADAPTIVE)
-                const int dev = gpu_scheduler_dynamic_ad(gpuLoad, ndevs, NNsq);
-                #elif defined(SCHED_ADAPTIVE2)
-                const int dev = gpu_scheduler_dynamic_ad2(gpuLoad, ndevs, NNsq);
-                #elif defined(SCHED_RANDOM)
-                const int dev = gpu_scheduler_dynamic_random(occupancies, ndevs);
-                #elif defined(SCHED_DYNAMIC)
-                const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
-                #elif defined(SCHED_DYNAMIC2)
-                const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
-                #else
-                const int dev = 0;
-                #endif
-                if (dev != -1)
-                    chosen[i] = dev;
-                success[i] = 0;
 
-                int d = chosen[i]; 
-/*#pragma omp task depend(in: chosen[i], inout: success[i])// name: fire [i]
-      {
-    int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-           if (dev != -1) chosen[i] = dev;
-               success[i] = 0;
-          // name: fire [i]
-*/
-                // #pragma omp task depend(in : chosen[i]) depend(inout : success[i])
-                // {
-                    // int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
-                    float *d_a,*d_b,*d_c;
-                    d_b = dev_pointers[d][1];
-
-                    #if defined(PRE_TRANSFER)
-                    d_a = dev_pointers[d][0];
-                    d_c = dev_pointers[d][2];
-                    #else
-                    d_a = (float *)omp_target_alloc(a_items * sizeof(float), d);
-                    omp_target_memcpy(d_a, a+a_start, a_items * sizeof(float), 0, 0, d, host_id);
-                    d_c = (float *)omp_target_alloc(c_items * sizeof(float), d);
-                    omp_target_memcpy(d_c, c+c_start, c_items * sizeof(float), 0, 0, d, host_id);
-                    #endif
-                    // #if defined(ASYN)
-                    // #pragma omp target device(d) \
-                    // map(to : a[0 : a_size], b[0 : b_size]) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1], c[0 : c_size]) nowait
-                    // #else
-                    // #pragma omp target device(d) \
-                    // map(to : a[0 : a_size], b[0 : b_size]) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1], c[0 : c_size])
-                    // #endif
-                    
-                    // #if defined(ASYN)
-                    // #pragma omp target device(d) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c) nowait
-                    // #else
-                    // #pragma omp target device(d) map(tofrom : success[i : 1], devices[d : 1], taskWork[i : 1]) is_device_ptr(d_a,d_b,d_c)
-                    // #endif
-                    // {
-                        // printf("GPU-%d\n",omp_get_device_num());
-                        devices[d]++;
-                        // const int NN = taskWork[i];
-                        // printf("dev %d [%d] (%d,%d) GPU\n",omp_get_device_num(),i,start,end);
-                        // #ifdef MM
-                        // for (int l = 0; l < nl; l++)
-                            // #pragma omp target teams disrtibute parallel for colapse(3)
-
-                            // printf("GPU %d: task num = %d start = %d end = %d size = %d\n",omp_get_device_num(),i,start,end,nRows);
-                            // for (int ii = start; ii < end; ii++){
-                            //     for (int jj = 0; jj < N; jj++){
-                                // printf("start task %d\n",i);
-                                #if defined(PRE_TRANSFER)
-                                multiply(d_a+a_start,d_b+b_start,d_c+c_start,m,n,k,d);
-                                #else
-                                multiply(d_a,d_b+b_start,d_c,m,n,k,d);
-                                #endif
-                                // #pragma omp target teams distribute parallel for num_teams(128) device(d) is_device_ptr(d_a,d_b,d_c)
-                                // for(int x = c_start;x<c_start+c_items;x++){
-                                //     int ii = x / n, jj = x % n;
-                                //     float sum = float();
-                                //     for (int kk = 0; kk < K; kk++)
-                                //         sum += d_a[ii * K + kk] * d_b[kk * N + jj];
-                                //     d_c[ii * N + jj] = sum;
-                                // }
-
-
-
-                                // printf("end task %d\n",i);
-                            // }
-                        
-                        success[i] = 1; // Note to Mathi: coudl this be outside ifdef?
-                        // omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(float), 0, 0, host_id, d);
-                        omp_target_memcpy(c+c_start, d_c, c_items * sizeof(float), 0, 0, host_id, d);
-                        // #endif
-                        #if not defined(PRE_TRANSFER)
-                        omp_target_free(d_a, d);
-                        omp_target_free(d_c, d);
-                        #endif
-                        
-                        // printf("task %d done\n",i);
-                //     }                    // end target
-                // }                        // end task
-                // #pragma omp task depend(in : success[i]) // name: post[i]
-                // {
-                    // int d = chosen[i]; // d is the device that just got freed
-                    #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
-                    occupancies[d]--;
-                    #endif
-                    #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
-                    gpuLoad[d] -= NNsq;
-                    // nextTask assignedTo the GPU just freed
-                    int myTask;
-                    #pragma omp atomic capture
-                    myTask = nextTask++;
-
-                    if (myTask < numTasks)
-                        chosen[myTask] = d;
-                    #endif
-                // }
-            } // end taskloop
-    //     }     // end of single
-    //     #pragma omp barrier
+    #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
+    for (int i = 0; i < numTasks; i++)
+    {
+        int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
+        int nRows = end-start;
+        int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
+    
+        m=nRows; n=N; k=K;
+        a_start = start*K; b_start = 0;   c_start = start*N;
+        a_items = nRows*K; b_items = K*N; c_items = nRows*N;
         
-    // } // end parallel
+        const int NNsq = c_items;
+        
+        #if defined(SCHED_ROUNDROBIN)
+        const int dev = gpu_scheduler_static_rr(i, ndevs);
+        #elif defined(SCHED_ADAPTIVE)
+        const int dev = gpu_scheduler_dynamic_ad(gpuLoad, ndevs, NNsq);
+        #elif defined(SCHED_ADAPTIVE2)
+        const int dev = gpu_scheduler_dynamic_ad2(gpuLoad, ndevs, NNsq);
+        #elif defined(SCHED_RANDOM)
+        const int dev = gpu_scheduler_dynamic_random(occupancies, ndevs);
+        #elif defined(SCHED_DYNAMIC)
+        const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
+        #elif defined(SCHED_DYNAMIC2)
+        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+        #else
+        const int dev = 0;
+        #endif
+        if (dev != -1)
+            chosen[i] = dev;
+        success[i] = 0;
+
+        int d = chosen[i]; 
+        float *d_a,*d_b,*d_c;
+        d_b = dev_pointers[d][1];
+
+        #if defined(PRE_TRANSFER)
+        d_a = dev_pointers[d][0];
+        d_c = dev_pointers[d][2];
+        #endif
+        devices[d]++;
+        #if defined(PRE_TRANSFER)
+        multiply(d_a+a_start,d_b+b_start,d_c+c_start,m,n,k,d);
+        omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(float), 0, 0, host_id, d);
+        #else
+        multiply(a+a_start,d_b+b_start,c+c_start,m,n,k,d,a_items,b_items,c_items);
+        #endif
+        success[i] = 1;
+        #if not defined(PRE_TRANSFER)
+        // omp_target_free(d_a, d);
+        // omp_target_free(d_c, d);
+        #endif
+            
+        #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
+        occupancies[d]--;
+        #endif
+        #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+        gpuLoad[d] -= NNsq;
+        // nextTask assignedTo the GPU just freed
+        int myTask;
+        #pragma omp atomic capture
+        myTask = nextTask++;
+
+        if (myTask < numTasks)
+            chosen[myTask] = d;
+        #endif
+        // }
+    } // end taskloop
+        
     #pragma omp taskwait
-    // printf("multiplication done.\n");
     for(int d=0;d<ndevs;d++){
         omp_target_free(dev_pointers[d][1], d);
         #if defined(PRE_TRANSFER)
@@ -543,6 +553,10 @@ int main(int argc, char *argv[])
     for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
     for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
     printf("\n");
+    
+    #if defined(VECTORIZE)
+    transposeMatrix(b,N,K);
+    #endif
 
     int lastFail = 0;
     for (int i = 0; i < numTasks; i++)
@@ -555,7 +569,6 @@ int main(int argc, char *argv[])
     {
         printf("failed! LastFailed %d \n", lastFail);
     }
-    printf("Statistics for %d iterations:\n", numTasks);
 
 
     // printf("Total number of CPU threads=%d\n", omp_get_num_threads());
@@ -577,9 +590,10 @@ int main(int argc, char *argv[])
         {
             for (int j = 0; j < N; j++){
                 float x = c[i * N + j], y = c_cpu[i * N + j];
-                if (x != y && ABS(x - y) > EPSILON) // float precision comparision upto 10^-6 for types like doubles
+                float diff = x-y;
+                if (x != y && ABS(diff) > EPSILON) // float precision comparision upto 10^-6 for types like doubles
                 {
-                    printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(x - y));
+                    printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(diff));
                     flag = false;
                     break;
                 }
@@ -588,9 +602,9 @@ int main(int argc, char *argv[])
                 break;
         }
         printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
+        // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
         free(c_cpu);
     }
-    // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
 
     free(a);
     free(b);
@@ -600,6 +614,6 @@ int main(int argc, char *argv[])
     free(taskWork);
     free(taskWorkSquared);
     free(success);
-    printf("DONE\n\n");
+    printf("\n");
     return 0;
 } // end main
