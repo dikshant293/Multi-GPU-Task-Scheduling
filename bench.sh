@@ -25,12 +25,12 @@ do
     echo MPI
     make test 
 
-    echo "$line"
-    echo
+    # echo "$line"
+    # echo
 
-    cd ../cuda/
-    echo CUDA
-    make cmp-sch
+    # cd ../cuda/
+    # echo CUDA
+    # make cmp-sch
 
     echo "$line"
     echo
