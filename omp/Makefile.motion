@@ -13,9 +13,9 @@ ARCH      = gfx906
 # Program name & source code list
 #===============================================================================
 
-program = motionsim
+TARGET = motionsim
 
-source = motionsim.cpp
+SRC = motionsim.cpp
 
 obj = $(source:.cpp=.o)
 
@@ -24,7 +24,7 @@ obj = $(source:.cpp=.o)
 #===============================================================================
 
 # Standard Flags
-CFLAGS := -std=c++14  -Wall 
+CFLAGS := -std=c++20  -Wall 
 
 # Linker Flags
 LDFLAGS = 
@@ -42,10 +42,7 @@ ifeq ($(OPTIMIZE),yes)
 endif
 
 ifeq ($(DEVICE),gpu)
-  CFLAGS += -target x86_64-pc-linux-gnu \
-          -fopenmp -fopenmp-targets=amdgcn-amd-amdhsa \
-          -Xopenmp-target=amdgcn-amd-amdhsa \
-          -march=$(ARCH)
+  CFLAGS += -fopenmp -ffast-math -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized -Ofast -openmp-simd -openmp-extensions -foffload-lto -fopenmp-assume-no-thread-state -march=native -fno-stack-protector -funroll-loops -fomit-frame-pointer -mavx2 -ffp-contract=fast -fno-signed-zeros -freciprocal-math -fmerge-all-constants
 else
   CFLAGS +=-fopenmp
 endif
@@ -53,14 +50,23 @@ endif
 # Targets to Build
 #===============================================================================
 
-$(program): $(obj) Makefile
-	$(CC) $(CFLAGS) $(obj) -o $@ $(LDFLAGS)
+BASE = $(CC) $(SRC) $(CFLAGS) -o $(TARGET) $(LDFLAGS)
 
-%.o: %.cpp Makefile
-	$(CC) $(CFLAGS) -c $< -o $@
+all: clean
+	$(BASE) -DSCHED_ROUNDROBIN
 
 clean:
-	rm -rf $(program) $(obj)
+	rm -rf $(TARGET) $(obj)
 
-run: $(program)
-	./$(program) 2000
+run: clean all
+	./$(TARGET) 2000 0.9
+
+  
+test: clean all
+	./$(TARGET) 20000 0.0
+	./$(TARGET) 20000 0.5
+	./$(TARGET) 20000 0.75
+	./$(TARGET) 20000 0.9
+	./$(TARGET) 20000 0.99
+	./$(TARGET) 20000 0.999
+	./$(TARGET) 20000 0.9999

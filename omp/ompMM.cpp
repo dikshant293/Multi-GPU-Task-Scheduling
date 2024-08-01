@@ -16,7 +16,9 @@
 #include <numeric>
 #include <cmath>
 #include <ctime>
+#if defined(VECTORIZE)
 #include <vector_types.h>
+#endif
 
 // Input data distribution
 #define RANDOM_SIZED_TASKS

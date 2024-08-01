@@ -25,6 +25,10 @@
 #include <cuda_runtime.h>
 #endif
 
+#if defined(VECTORIZE)
+#include <vector_types.h>
+#endif
+
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
@@ -35,6 +39,7 @@
 
 #define PSIZE 2000
 
+#if not defined(USEOPENMP)
 // Kernel for matrix-matrix multiplication
 __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int K)
 {
@@ -82,6 +87,7 @@ __host__ inline cudaError_t checkCuda(cudaError_t status)
     }
     return status;
 }
+#endif
 
 void printMatrix(float *mat, int m, int n){
     for(int i=0;i<m;i++){
@@ -183,9 +189,6 @@ void transposeMatrix(float* matrix, int m, int n) {
 
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
-
-    int ndevs = 0;
-    cudaError_t error_id = cudaGetDeviceCount(&ndevs);
 
     int world_size, world_rank;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
@@ -315,7 +318,7 @@ int main(int argc, char **argv) {
     cudaMalloc(&d_c,c_items*sizeof(float));
     cudaMemcpy(d_c,h_c,c_items*sizeof(float),cudaMemcpyHostToDevice);
 
-    int blk_x = min(MAX_TPB,n), blk_y = min(MAX_TPB,m);
+    int blk_x = MIN(MAX_TPB,n), blk_y = MIN(MAX_TPB,m);
     dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
     dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
 
@@ -382,16 +385,24 @@ int main(int argc, char **argv) {
                 //     break;
             }
             printf("Correctness check: %s (mismatches = %d)\n",(flag ? "PASSED" : "FAILED"), mismatches);
-            cudaFreeHost(c_cpu);
+            free(c_cpu);
         }
+        #if defined(USEOPENMP)
+        free(a);free(b);free(c);
+        #else
         cudaFreeHost(a);
         cudaFreeHost(b);
         cudaFreeHost(c);
+        #endif
     }
     else{
+        #if defined(USEOPENMP)
+        free(h_a);free(h_b);free(h_c);
+        #else
         cudaFreeHost(h_a);
         cudaFreeHost(h_b);
         cudaFreeHost(h_c);
+        #endif
     }
 
     MPI_Finalize();
