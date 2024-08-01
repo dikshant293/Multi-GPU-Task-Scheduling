@@ -23,17 +23,17 @@ do
 
     cd mpi/
     echo MPI
-    make test 
+    make openmp 
 
-    # echo "$line"
-    # echo
+    echo "$line"
+    echo
 
     # cd ../cuda/
     # echo CUDA
     # make cmp-sch
 
-    echo "$line"
-    echo
+    # echo "$line"
+    # echo
 
     cd ../omp/
     echo OPENMP
