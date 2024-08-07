@@ -219,3 +219,64 @@ cmp-sch:
 	./$(TARGET) $(n) $(n) $(n) $(g) 2
 	@$(BASE) -DSCHED_ADAPTIVE2
 	./$(TARGET) $(n) $(n) $(n) $(g) 2
+
+
+gran-test:
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.4
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0
+
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.4
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0
+
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.4
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0
+
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.4
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0
+
+	
+	

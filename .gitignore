@@ -39,3 +39,4 @@ cuda/cuda_nvhpc
 cuda/report*
 cuda/test.txt
 hlp
+omp/prototype.cpp

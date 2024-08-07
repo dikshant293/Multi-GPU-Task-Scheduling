@@ -15,13 +15,25 @@
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define ABS(x) (((x) < (0)) ? (-x) : (x))
 
-// Helper functions
-inline unsigned gpu_scheduler_static_rr(int taskID, int ngpus)
+#define MAX_TPB 1024
+
+__host__ inline cudaError_t checkCuda(cudaError_t status)
+{
+    if (status != cudaSuccess)
+    {
+        std::cout << "CUDA Runtime Error: " << cudaGetErrorString(status)
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+    return status;
+}
+
+__host__ inline unsigned gpu_scheduler_static_rr(int taskID, int ngpus)
 {
     return taskID % ngpus;
 }
 
-inline unsigned gpu_scheduler_dynamic_ad(unsigned long *gpuLoad, int ngpus, int taskWeight)
+__host__ inline unsigned gpu_scheduler_dynamic_ad(unsigned long *gpuLoad, int ngpus, int taskWeight)
 {
     short looking = 1;
     unsigned chosen;
@@ -50,7 +62,7 @@ inline unsigned gpu_scheduler_dynamic_ad(unsigned long *gpuLoad, int ngpus, int 
 }
 
 // This version avoids all CPU threads finding the same GPU greedily (and therefore overloading that GPU)
-inline unsigned gpu_scheduler_dynamic_ad2(unsigned long *gpuLoad, int ngpus, int taskWeight)
+__host__ inline unsigned gpu_scheduler_dynamic_ad2(unsigned long *gpuLoad, int ngpus, int taskWeight)
 {
     short looking = 1;
     unsigned chosen;
@@ -78,7 +90,7 @@ inline unsigned gpu_scheduler_dynamic_ad2(unsigned long *gpuLoad, int ngpus, int
     return chosen;
 }
 
-inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int ngpus)
+__host__ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int ngpus)
 {
     const unsigned chosen = rand() % ngpus;
 #pragma omp atomic
@@ -86,7 +98,7 @@ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int ngpus)
     return chosen;
 }
 
-inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
+__host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
 {
     int chosen = -1;
     while (chosen == -1)
@@ -108,7 +120,7 @@ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
     return chosen;
 }
 
-inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ngpus)
+__host__ inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ngpus)
 {
     short looking = 1;
     unsigned chosen;
@@ -129,6 +141,40 @@ inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ngpus)
                 break;
             }
         }
+    }
+    return chosen;
+}
+
+__host__ inline unsigned gpu_scheduler_mem(int ngpus, int task_id)
+{
+    short looking = 1;
+    unsigned chosen;
+    while (looking)
+    {
+        size_t max_free = 0;
+    #pragma omp critical
+        {
+            for (unsigned j = 0; j < ngpus; j++)
+            {
+                size_t free_byte;
+                size_t total_byte;
+                int i = (j + task_id)%ngpus;
+                cudaSetDevice(i);
+                cudaError_t cuda_status = cudaMemGetInfo(&free_byte, &total_byte);
+
+                if (cudaSuccess != cuda_status) {
+                    std::cerr << "Error: cudaMemGetInfo fails, " << cudaGetErrorString(cuda_status) << std::endl;
+                    exit(1);
+                }
+                if (free_byte > max_free)
+                {
+                    max_free = free_byte;
+                    chosen = i;
+                }
+            }
+        }
+        looking = 0;
+        break;
     }
     return chosen;
 }
@@ -165,10 +211,21 @@ void print_checksum(T **matrix, size_t size_X, size_t size_Y)
     {
         for (size_t j = 0; j < size_Y; ++j)
         {
-            x+= matrix[i][j];
+            x += matrix[i][j];
         }
     }
-    std::cout<<"Checksum = "<<x<<std::endl;
+    std::cout << "Checksum = " << x << std::endl;
+}
+
+template <typename T>
+T print_checksum_1d(T *matrix, size_t size_X)
+{
+    T x = T();
+    for (size_t i = 0; i < size_X; ++i)
+    {
+        x += matrix[i];
+    }
+    return x;
 }
 
 // This function prints a vector
@@ -183,25 +240,18 @@ void print_vector(T *vector, size_t n)
     std::cout << std::endl;
 }
 
-template <typename T>
-T print_checksum_1d(T *matrix, size_t size_X)
-{
-    T x = T();
-    for (size_t i = 0; i < size_X; ++i) {
-        x += matrix[i];
-    }
-    return x;
-}
-
 auto clk = std::chrono::high_resolution_clock::now();
 
-void start_timer(){
+void start_timer()
+{
+    std::cout<<"timer started"<<std::endl;
     clk = std::chrono::high_resolution_clock::now();
 }
 
-void end_timer(std::string func){
+void end_timer(std::string func)
+{
     auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - clk);
-    std::cout<<func<<" took "<<1.0e-9 * duration.count()<<" seconds\n";
+    std::cout << func << " took " << 1.0e-9 * duration.count() << " seconds\n";
 }
 
 // Function to calculate chunk sizes from start indices
@@ -240,6 +290,65 @@ std::vector<int> generateEqualChunkStartIndices(int n, int m)
     return startIndexes;
 }
 
+__global__ void kernel(float *randX, float *randY, float *partX, float *partY, size_t *mp_ptr, int n_parts, int nIterations, int grid_size, float radius)
+{
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < n_parts; idx += blockDim.x * gridDim.x)
+    {
+        // printf("idx = %d nparts = %d\n", idx, n_parts);
+        size_t randnumX = 0;
+        size_t randnumY = 0;
+        float displacementX = 0.0f;
+        float displacementY = 0.0f;
+
+        // Start iterations
+        // Each iteration:
+        //  1. Updates the position of all water molecules
+        //  2. Checks if water molecule is inside a cell or not.
+        //  3. Updates counter in cells array
+        size_t iter = 0;
+        while (iter < nIterations)
+        {
+            // Computes random displacement for each molecule
+            // This example shows random distances between
+            // -0.05 units and 0.05 units in both X and Y directions
+            // Moves each water molecule by a random vector
+            randnumX = randX[idx * nIterations + iter];
+            randnumY = randY[idx * nIterations + iter];
+
+            // Transform the scaled random numbers into small displacements
+            displacementX = (float)randnumX / 1000.0f - 0.0495f;
+            displacementY = (float)randnumY / 1000.0f - 0.0495f;
+
+            // Move particles using random displacements
+            partX[idx] += displacementX;
+            partY[idx] += displacementY;
+
+            // Compute distances from particle position to grid point
+            float dX = partX[idx] - truncf(partX[idx]);
+            float dY = partY[idx] - truncf(partY[idx]);
+
+            // Compute grid point indices
+            int iX = floorf(partX[idx]);
+            int iY = floorf(partY[idx]);
+
+            // Check if particle is still in computation grid
+            if ((partX[idx] < grid_size) &&
+                (partY[idx] < grid_size) && (partX[idx] >= 0) &&
+                (partY[idx] >= 0))
+            {
+                // Check if particle is (or remained) inside cell.
+                // Increment cell counter in map array if so
+                if ((dX * dX + dY * dY <= radius * radius))
+                {
+                    // The map array is organized as (particle, y, x)
+                    mp_ptr[idx * grid_size * grid_size + iY * grid_size + iX]++;
+                }
+            }
+            iter++;
+        } // Next iteration
+    }
+}
+
 // This function distributes simulation work across workers
 void motion_device(float *particleX, float *particleY,
                    float *randomX, float *randomY, int **grid, int grid_size,
@@ -258,10 +367,10 @@ void motion_device(float *particleX, float *particleY,
         randomX[i] = rand() % scale;
         randomY[i] = rand() % scale;
     }
-
     const size_t MAP_SIZE = n_particles * grid_size * grid_size;
 
-    const int ndevs = omp_get_num_devices();
+    int ndevs;
+    cudaGetDeviceCount(&ndevs);
     assert(ndevs > 0);
     int *devices = (int *)calloc(ndevs, sizeof(*devices));
     double start_iterations, end_iterations;
@@ -276,7 +385,7 @@ void motion_device(float *particleX, float *particleY,
 
     int *chosen = (int *)malloc(sizeof(int) * numTasks);
     int *success = (int *)malloc(sizeof(int) * numTasks);
-    printf("nTasks = %d particles per task = %d\n",numTasks,particlesPerTask);
+    printf("nTasks = %d particles per task = %d\n", numTasks, particlesPerTask);
     std::vector<int> startIndexes = generateEqualChunkStartIndices(n_particles, numTasks);
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, n_particles);
 
@@ -292,125 +401,133 @@ void motion_device(float *particleX, float *particleY,
     printf("gpu_scheduler_dynamic_occ\n");
 #elif defined(SCHED_DYNAMIC2)
     printf("gpu_scheduler_dynamic_occ2\n");
+#elif defined(SCHED_MEM)
+    printf("gpu_scheduler_mem\n");
 #else
     printf("none 0\n");
 #endif
+
+    int streams_per_gpu = 4;
+    std::vector<std::vector<cudaStream_t>> streams(ndevs, std::vector<cudaStream_t>(streams_per_gpu));
+#pragma omp parallel for schedule(static, 1)
+    for (int d = 0; d < ndevs; d++)
+    {
+        cudaSetDevice(d);
+        for (int s = 0; s < streams_per_gpu; s++)
+            cudaStreamCreate(&streams[d][s]);
+    }
+    std::vector<int> strm_ctr(ndevs, 0);
+
+    auto nxt_strm = [&](int &x) -> int
+    {
+        int temp;
+#pragma omp critical
+        {
+            temp = x;
+            x = (x + 1) % streams_per_gpu;
+        }
+        return temp;
+    };
+    
     int nextTask = ndevs;
     start_timer();
-    #pragma omp parallel for shared(success, chosen, startIndexes, chunkSizes) schedule(static,1)
+
+#pragma omp parallel for shared(success, chosen, startIndexes, chunkSizes) schedule(static, 1)
     for (int i = 0; i < numTasks; i++)
     {
         int start = startIndexes[i], end = (i == numTasks - 1 ? n_particles : startIndexes[i + 1]);
         int n_parts = end - start;
         const int NNsq = n_parts;
 
-        #if defined(SCHED_ROUNDROBIN)
+#if defined(SCHED_ROUNDROBIN)
         const int dev = gpu_scheduler_static_rr(i, ndevs);
-        #elif defined(SCHED_ADAPTIVE)
+#elif defined(SCHED_ADAPTIVE)
         const int dev = gpu_scheduler_dynamic_ad(gpuLoad, ndevs, NNsq);
-        #elif defined(SCHED_ADAPTIVE2)
+#elif defined(SCHED_ADAPTIVE2)
         const int dev = gpu_scheduler_dynamic_ad2(gpuLoad, ndevs, NNsq);
-        #elif defined(SCHED_RANDOM)
+#elif defined(SCHED_RANDOM)
         const int dev = gpu_scheduler_dynamic_random(occupancies, ndevs);
-        #elif defined(SCHED_DYNAMIC)
+#elif defined(SCHED_DYNAMIC)
         const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
-        #elif defined(SCHED_DYNAMIC2)
+#elif defined(SCHED_DYNAMIC2)
         const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
-        #else
+#elif defined(SCHED_MEM)
+        const int dev = gpu_scheduler_mem(ndevs, i);
+#else
         const int dev = 0;
-        #endif
+#endif
         if (dev != -1)
             chosen[i] = dev;
         success[i] = 0;
-        int d = chosen[i]; 
+        int d = chosen[i];
         devices[d]++;
 
-        float *randX = randomX + start * nIterations, *randY = randomY + start * nIterations;
-        float *partX = particleX + start, *partY = particleY + start;
-        size_t *mp_ptr =  map + start * grid_size * grid_size;
+        float *randX, *randY, *partX, *partY;
+        size_t *mp_ptr;
 
-        #pragma omp target teams distribute parallel for num_teams(CEIL(n_parts,1024)) thread_limit(1024) schedule (static, 1) device(d) \
-        map(to : randX[0 : n_parts * nIterations], randY[0 : n_parts * nIterations]) \
-        map(tofrom : partX[0 : n_parts], partY[0 : n_parts], mp_ptr[0 : n_parts * grid_size * grid_size])
-        for (int ii = start; ii < end; ii++)
-        {
+        int nxt = nxt_strm(strm_ctr[d]);
 
-            size_t randnumX = 0;
-            size_t randnumY = 0;
-            float displacementX = 0.0f;
-            float displacementY = 0.0f;
+        cudaSetDevice(d);
+        auto stream = streams[d][nxt];
 
-            // Start iterations
-            // Each iteration:
-            //  1. Updates the position of all water molecules
-            //  2. Checks if water molecule is inside a cell or not.
-            //  3. Updates counter in cells array
-            size_t iter = 0;
-            while (iter < nIterations)
-            {
-                // Computes random displacement for each molecule
-                // This example shows random distances between
-                // -0.05 units and 0.05 units in both X and Y directions
-                // Moves each water molecule by a random vector
-                const int idx = ii - start;
-                randnumX = randX[idx * nIterations + iter];
-                randnumY = randY[idx * nIterations + iter];
+        cudaMallocAsync(&randX, n_parts * nIterations * sizeof(float), stream);
+        cudaMemcpyAsync(randX, randomX + start * nIterations, n_parts * nIterations * sizeof(float), cudaMemcpyHostToDevice, stream);
 
-                // Transform the scaled random numbers into small displacements
-                displacementX = (float)randnumX / 1000.0f - 0.0495f;
-                displacementY = (float)randnumY / 1000.0f - 0.0495f;
+        cudaMallocAsync(&randY, n_parts * nIterations * sizeof(float), stream);
+        cudaMemcpyAsync(randY, randomY + start * nIterations, n_parts * nIterations * sizeof(float), cudaMemcpyHostToDevice, stream);
 
-                // Move particles using random displacements
-                partX[idx] += displacementX;
-                partY[idx] += displacementY;
+        cudaMallocAsync(&partX, n_parts * sizeof(float), stream);
+        cudaMemcpyAsync(partX, particleX + start, n_parts * sizeof(float), cudaMemcpyHostToDevice, stream);
 
-                // Compute distances from particle position to grid point
-                float dX = partX[idx] - truncf(partX[idx]);
-                float dY = partY[idx] - truncf(partY[idx]);
+        cudaMallocAsync(&partY, n_parts * sizeof(float), stream);
+        cudaMemcpyAsync(partY, particleY + start, n_parts * sizeof(float), cudaMemcpyHostToDevice, stream);
 
-                // Compute grid point indices
-                int iX = floorf(partX[idx]);
-                int iY = floorf(partY[idx]);
+        cudaMallocAsync(&mp_ptr, n_parts * grid_size * grid_size * sizeof(size_t), stream);
+        cudaMemcpyAsync(mp_ptr, map + start * grid_size * grid_size, n_parts * grid_size * grid_size * sizeof(size_t), cudaMemcpyHostToDevice, stream);
 
-                // Check if particle is still in computation grid
-                if ((partX[idx] < grid_size) &&
-                    (partY[idx] < grid_size) && (partX[idx] >= 0) &&
-                    (partY[idx] >= 0))
-                {
-                    // Check if particle is (or remained) inside cell.
-                    // Increment cell counter in map array if so
-                    if ((dX * dX + dY * dY <= radius * radius))
-                    {
-                        // The map array is organized as (particle, y, x)
-                        mp_ptr[idx * grid_size * grid_size + iY * grid_size + iX]++;
-                    }
-                }
+        int tpb = MIN(MAX_TPB, n_parts);
+        int blks = CEIL(n_parts, tpb);
+        // printf("tpb = %d blks = %d nparts = %d\n", tpb, blks, n_parts);
+        // std::cout<<randX<<" "<<randY<<" "<<partX<<" "<<partY<<" "<<mp_ptr<<" "<<n_parts<<" "<<nIterations<<" "<<grid_size<<" "<<radius<<std::endl;
+        kernel<<<blks, tpb, 0, stream>>>(randX, randY, partX, partY, mp_ptr, n_parts, nIterations, grid_size, radius);
 
-                iter++;
+        cudaMemcpyAsync(particleX + start, partX, n_parts * sizeof(float), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(particleY + start, partY, n_parts * sizeof(float), cudaMemcpyDeviceToHost, stream);
+        cudaMemcpyAsync(map + start * grid_size * grid_size, mp_ptr, n_parts * grid_size * grid_size * sizeof(size_t), cudaMemcpyDeviceToHost, stream);
 
-            } // Next iteration
-        }
+        cudaFreeAsync(randX, stream);
+        cudaFreeAsync(randY, stream);
+        cudaFreeAsync(partX, stream);
+        cudaFreeAsync(partY, stream);
+        cudaFreeAsync(mp_ptr, stream);
 
-        #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
+#if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
         success[i] = 1;
+        cudaStreamSynchronize(stream);
         occupancies[d]--;
-        #endif
-        #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+#endif
+#if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+        cudaStreamSynchronize(stream);
         success[i] = 1;
         gpuLoad[d] -= NNsq;
-        // nextTask assignedTo the GPU just freed                                                                                                                                                                      
+        // nextTask assignedTo the GPU just freed
         int myTask;
-        #pragma omp atomic capture 
+#pragma omp atomic capture
         myTask = nextTask++;
-        if(myTask < numTasks) chosen[myTask] = d;
-        #endif
+        if (myTask < numTasks)
+            chosen[myTask] = d;
+#endif
     }
+    cudaDeviceSynchronize();
 
     end_timer("motion sim");
-    std::vector<int> percent(ndevs,0);
-    for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
-    for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
-    printf("\n"); 
+
+    std::vector<int> percent(ndevs, 0);
+    for (int i = 0; i < numTasks; i++)
+        percent[chosen[i]]++;
+    for (int i = 0; i < ndevs; i++)
+        printf("GPU %d: %0.2lf  ", i, (double)percent[i] / numTasks);
+    printf("\n");
     // For every cell in the grid, add all the counters from different
     // particles (workers) which are stored in the 3rd dimension of the 'map'
     // array
@@ -433,9 +550,9 @@ void motion_device(float *particleX, float *particleY,
 int main(int argc, char *argv[])
 {
     // Cell and Particle parameters
-    const size_t grid_size = 21;       // Size of square grid
+    const size_t grid_size = 21;    // Size of square grid
     int n_particles = 2e4; // Number of particles
-    const float radius = 0.5;          // Cell radius = 0.5*(grid spacing)
+    const float radius = 0.5;       // Cell radius = 0.5*(grid spacing)
 
     // Default number of operations
     int nIterations = 50;
@@ -452,9 +569,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if(argc>2){
+    if (argc > 2)
+    {
         granularity = atof(argv[2]);
-        if(granularity<0 or granularity>1){
+        if (granularity < 0 or granularity > 1)
+        {
             usage(argv[0]);
             return 1;
         }
@@ -467,24 +586,30 @@ int main(int argc, char *argv[])
     // Allocate arrays
 
     // Stores a grid of cells
-    int **grid = new int *[grid_size];
-    grid[0] = new int[grid_size*grid_size];
+    int **grid;
+    checkCuda(cudaMallocHost(&grid, grid_size * sizeof(int *)));
+    checkCuda(cudaMallocHost(grid, grid_size * grid_size * sizeof(int)));
     for (size_t i = 0; i < grid_size; i++)
-        grid[i] = grid[0] + grid_size*i;
+        grid[i] = grid[0] + grid_size * i;
 
     // Stores all random numbers to be used in the simulation
-    float *randomX = new float[n_particles * nIterations];
-    float *randomY = new float[n_particles * nIterations];
-
+    float *randomX, *randomY;
     // Stores X and Y position of particles in the cell grid
-    float *particleX = new float[n_particles];
-    float *particleY = new float[n_particles];
+    float *particleX, *particleY;
+
+    checkCuda(cudaMallocHost(&particleX, n_particles * sizeof(float)));
+    checkCuda(cudaMallocHost(&particleY, n_particles * sizeof(float)));
+    checkCuda(cudaMallocHost(&randomX, n_particles * nIterations * sizeof(float)));
+    checkCuda(cudaMallocHost(&randomY, n_particles * nIterations * sizeof(float)));
 
     // 'map' array replicates grid to be used by each particle
     const size_t MAP_SIZE = n_particles * grid_size * grid_size;
-    size_t *map = new size_t[MAP_SIZE];
+    size_t *map;
+    checkCuda(cudaMallocHost(&map, MAP_SIZE * sizeof(size_t)));
+
     printf("nparticles = %d niterations = %d granularity = %lf\n",n_particles,nIterations,granularity);
-    std::cout<<"total memory = "<<(float)(2 * n_particles * (nIterations + 1) * sizeof(float) + n_particles * grid_size * grid_size * sizeof(size_t))/1024/1024/1024<<" GB"<<std::endl;
+    std::cout << "total memory = " << (float)(2 * n_particles * (nIterations + 1) * sizeof(float) + n_particles * grid_size * grid_size * sizeof(size_t)) / 1024 / 1024 / 1024 << " GB" << std::endl;
+
     // Initialize arrays
     for (size_t i = 0; i < n_particles; i++)
     {
@@ -509,9 +634,19 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Start timers
+    // auto start = std::chrono::steady_clock::now();
+
     // Call simulation function
     motion_device(particleX, particleY, randomX, randomY, grid, grid_size,
                   n_particles, nIterations, radius, map, granularity);
+
+    // auto end = std::chrono::steady_clock::now();
+    // auto time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+    //                 .count();
+    // std::cout << std::endl;
+    // std::cout << "Time: " << time << " ms " << std::endl;
+    // std::cout << std::endl;
 
     if (grid_size <= 64)
     {
@@ -519,14 +654,14 @@ int main(int argc, char *argv[])
         // print_matrix<int>(grid, grid_size, grid_size);
     }
 
-    delete grid[0];
-
-    delete[] grid;
-    delete[] particleX;
-    delete[] particleY;
-    delete[] randomX;
-    delete[] randomY;
-    delete[] map;
+    // Cleanup
+    cudaFreeHost(grid[0]);
+    cudaFreeHost(grid);
+    cudaFreeHost(particleX);
+    cudaFreeHost(particleY);
+    cudaFreeHost(randomX);
+    cudaFreeHost(randomY);
+    cudaFreeHost(map);
 
     return 0;
 }

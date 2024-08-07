@@ -175,6 +175,40 @@ __host__ inline unsigned gpu_scheduler_dynamic_occ(unsigned *occupancies, int ng
     return chosen;
 }
 
+__host__ inline unsigned gpu_scheduler_mem(int ngpus, int task_id)
+{
+    short looking = 1;
+    unsigned chosen;
+    while (looking)
+    {
+        size_t max_free = 0;
+    #pragma omp critical
+        {
+            for (unsigned j = 0; j < ngpus; j++)
+            {
+                size_t free_byte;
+                size_t total_byte;
+                int i = (j + task_id)%ngpus;
+                cudaSetDevice(i);
+                cudaError_t cuda_status = cudaMemGetInfo(&free_byte, &total_byte);
+
+                if (cudaSuccess != cuda_status) {
+                    std::cerr << "Error: cudaMemGetInfo fails, " << cudaGetErrorString(cuda_status) << std::endl;
+                    exit(1);
+                }
+                if (free_byte > max_free)
+                {
+                    max_free = free_byte;
+                    chosen = i;
+                }
+            }
+        }
+        looking = 0;
+        break;
+    }
+    return chosen;
+}
+
 void transposeMatrix(float* matrix, int m, int n) {
     for (int i = 0; i < m; ++i) {
         for (int j = i + 1; j < n; ++j) {
@@ -200,14 +234,9 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
                 #if defined(VECTORIZE)
                 auto a = reinterpret_cast<float4*>(&A[i * K]);
                 auto b = reinterpret_cast<float4*>(&B[j * K]);
-                // printf("check %d %d (%p %p) (%p %p) %d\n",i*K*4,j*K*4,a,&A[i * K],b,&B[j * K],K/4);
                 for (int k = 0; k < K/4; k++)
                 {
-                    // printf("before\n");
-                    // auto a = a_4[k], b = b_4[k];
-                    // printf("%f,%f,%f,%f %f,%f,%f,%f\n",a.w,a.x,a.y,a.z,b.w,b.x,b.y,b.z);
                     sum += a->x*b->x + a->y*b->y + a->z*b->z + a->w*b->w;
-                    // printf("(%f,%f)\n",a->w,b->w);
                     a++;
                     b++;
                 }
@@ -376,7 +405,6 @@ int main(int argc, char **argv)
 {
     int ndevs = 0;
     cudaError_t error_id = cudaGetDeviceCount(&ndevs);
-
     if (error_id != cudaSuccess)
     {
         printf("cudaGetDeviceCount returned %d\n-> %s\n", (int)error_id, cudaGetErrorString(error_id));
@@ -430,14 +458,16 @@ int main(int argc, char **argv)
         if (argc > 5)
             chunk = atoi(argv[5]);
         if (argc > 6)
-            check_result = 1;
+            check_result = atoi(argv[6]);
+        if (argc > 7)
+            streams_per_gpu = atoi(argv[7]);
     }
     int a_size = M * K, b_size = K * N, c_size = M * N;
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
     int numTasks = CEIL(M,rowsPerTask);
-    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d] [numThreadsPerBlock=%d] [streams_per_gpu=%d]\n",
-            M, N, K, numTasks, granularity, rowsPerTask, numThreadsPerBlock, streams_per_gpu);
+    printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [numThreadsPerBlock=%d] [streams_per_gpu=%d]\n",
+            M, N, K, numTasks, granularity, numThreadsPerBlock, streams_per_gpu);
 
     #if defined(SCHED_ROUNDROBIN)
     printf("gpu_scheduler_static_rr,\t");
@@ -451,10 +481,12 @@ int main(int argc, char **argv)
     printf("gpu_scheduler_dynamic_occ,\t");
     #elif defined(SCHED_DYNAMIC2)
     printf("gpu_scheduler_dynamic_occ2,\t");
+    #elif defined(SCHED_MEM)
+    printf("gpu_scheduler_mem,\t");
     #else
     printf("none 0\n");
     #endif
-
+    
     float *a,*b,*c;
 
     checkCuda(cudaMallocHost(&a,a_size*sizeof(float)));
@@ -478,8 +510,6 @@ int main(int argc, char **argv)
 
     for (int i = 0; i < c_size; i++)
         c[i] = 0.0;
-
-    
 
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
     
@@ -507,12 +537,19 @@ int main(int argc, char **argv)
     printf("non-openMP,\t");
     #endif
     
+    #if defined(USE1D)
+    printf("1d blocks\t");
+    #else
+    printf("2d blocks\t");
+    #endif
+    
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
     #pragma omp parallel for schedule(static,1)
     for(int d=0;d<ndevs;d++){
         cudaSetDevice(d);
         for(int s=0;s<streams_per_gpu;s++)
             cudaStreamCreate(&streams[d][s]);
+        cudaDeviceSynchronize();
     }
     std::vector<int> strm_ctr(ndevs,0);
 
@@ -599,6 +636,8 @@ int main(int argc, char **argv)
             const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
             #elif defined(SCHED_DYNAMIC2)
             const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+            #elif defined(SCHED_MEM)
+            const int dev = gpu_scheduler_mem(ndevs,i);
             #else
             const int dev = 0;
             #endif
@@ -606,6 +645,7 @@ int main(int argc, char **argv)
                 chosen[i] = dev;
             success[i] = 0;
 
+            // assert(0 <= chosen[i] < ndevs);
             int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
 
             devices[d]++;
@@ -629,10 +669,13 @@ int main(int argc, char **argv)
             
             
             int blk_x = min(MAX_TPB,n), blk_y = min(MAX_TPB,m);
+            #if defined(USE1D)
+            dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
+            dim3 threadsPerBlock(numThreadsPerBlock,1);
+            #else
             dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
             dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
-            // dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
-            // dim3 threadsPerBlock(numThreadsPerBlock,1);
+            #endif
             // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
             
             #if defined(PRE_TRANSFER)
@@ -653,7 +696,10 @@ int main(int argc, char **argv)
             #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
             success[i] = 1;
             cudaStreamSynchronize(stream);
-            occupancies[d]--;
+            #pragma omp critical
+            {
+                occupancies[d]--;
+            }
             #endif
             #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
             cudaStreamSynchronize(stream);

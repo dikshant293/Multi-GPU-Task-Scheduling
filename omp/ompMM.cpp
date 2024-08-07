@@ -452,11 +452,13 @@ int main(int argc, char *argv[])
     float * __restrict (*dev_pointers)[3];
     dev_pointers = (float *(*)[3])malloc(ndevs * sizeof(*dev_pointers));
     
+
+    start_timer();
+
     #if defined(VECTORIZE)
     transposeMatrix(b,K,N);
     #endif
 
-    start_timer();
     #pragma omp parallel for shared(dev_pointers)
     for(int d=0;d<ndevs;d++){
         dev_pointers[d][1] = (float *)omp_target_alloc(b_size * sizeof(float), d);
@@ -470,75 +472,84 @@ int main(int argc, char *argv[])
         #endif
     }
 
-    #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
-    for (int i = 0; i < numTasks; i++)
+    #pragma omp parallel
     {
-        int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
-        int nRows = end-start;
-        int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
-    
-        m=nRows; n=N; k=K;
-        a_start = start*K; b_start = 0;   c_start = start*N;
-        a_items = nRows*K; b_items = K*N; c_items = nRows*N;
-        
-        const int NNsq = c_items;
-        
-        #if defined(SCHED_ROUNDROBIN)
-        const int dev = gpu_scheduler_static_rr(i, ndevs);
-        #elif defined(SCHED_ADAPTIVE)
-        const int dev = gpu_scheduler_dynamic_ad(gpuLoad, ndevs, NNsq);
-        #elif defined(SCHED_ADAPTIVE2)
-        const int dev = gpu_scheduler_dynamic_ad2(gpuLoad, ndevs, NNsq);
-        #elif defined(SCHED_RANDOM)
-        const int dev = gpu_scheduler_dynamic_random(occupancies, ndevs);
-        #elif defined(SCHED_DYNAMIC)
-        const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
-        #elif defined(SCHED_DYNAMIC2)
-        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
-        #else
-        const int dev = 0;
-        #endif
-        if (dev != -1)
-            chosen[i] = dev;
-        success[i] = 0;
-
-        int d = chosen[i]; 
-        float *d_a,*d_b,*d_c;
-        d_b = dev_pointers[d][1];
-
-        #if defined(PRE_TRANSFER)
-        d_a = dev_pointers[d][0];
-        d_c = dev_pointers[d][2];
-        #endif
-        devices[d]++;
-        #if defined(PRE_TRANSFER)
-        multiply(d_a+a_start,d_b+b_start,d_c+c_start,m,n,k,d);
-        omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(float), 0, 0, host_id, d);
-        #else
-        multiply(a+a_start,d_b+b_start,c+c_start,m,n,k,d,a_items,b_items,c_items);
-        #endif
-        success[i] = 1;
-        #if not defined(PRE_TRANSFER)
-        // omp_target_free(d_a, d);
-        // omp_target_free(d_c, d);
-        #endif
+        #pragma omp single
+        {
+            #pragma omp taskloop grainsize(1) shared(success, nextTask, chosen, startIndexes, chunkSizes)
+            for (int i = 0; i < numTasks; i++)
+            {
+                int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
+                int nRows = end-start;
+                int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
             
-        #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
-        occupancies[d]--;
-        #endif
-        #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
-        gpuLoad[d] -= NNsq;
-        // nextTask assignedTo the GPU just freed
-        int myTask;
-        #pragma omp atomic capture
-        myTask = nextTask++;
+                m=nRows; n=N; k=K;
+                a_start = start*K; b_start = 0;   c_start = start*N;
+                a_items = nRows*K; b_items = K*N; c_items = nRows*N;
+                
+                const int NNsq = c_items;
+                
+                #if defined(SCHED_ROUNDROBIN)
+                const int dev = gpu_scheduler_static_rr(i, ndevs);
+                #elif defined(SCHED_ADAPTIVE)
+                const int dev = gpu_scheduler_dynamic_ad(gpuLoad, ndevs, NNsq);
+                #elif defined(SCHED_ADAPTIVE2)
+                const int dev = gpu_scheduler_dynamic_ad2(gpuLoad, ndevs, NNsq);
+                #elif defined(SCHED_RANDOM)
+                const int dev = gpu_scheduler_dynamic_random(occupancies, ndevs);
+                #elif defined(SCHED_DYNAMIC)
+                const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
+                #elif defined(SCHED_DYNAMIC2)
+                const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+                #else
+                const int dev = 0;
+                #endif
+                if (dev != -1)
+                    chosen[i] = dev;
+                success[i] = 0;
 
-        if (myTask < numTasks)
-            chosen[myTask] = d;
-        #endif
-        // }
-    } // end taskloop
-        
+                int d = chosen[i]; 
+                float *d_a,*d_b,*d_c;
+                d_b = dev_pointers[d][1];
+
+                #if defined(PRE_TRANSFER)
+                d_a = dev_pointers[d][0];
+                d_c = dev_pointers[d][2];
+                #endif
+                devices[d]++;
+                #if defined(PRE_TRANSFER)
+                multiply(d_a+a_start,d_b+b_start,d_c+c_start,m,n,k,d);
+                omp_target_memcpy(c+c_start, d_c+c_start, c_items * sizeof(float), 0, 0, host_id, d);
+                #else
+                multiply(a+a_start,d_b+b_start,c+c_start,m,n,k,d,a_items,b_items,c_items);
+                #endif
+                success[i] = 1;
+                #if not defined(PRE_TRANSFER)
+                // omp_target_free(d_a, d);
+                // omp_target_free(d_c, d);
+                #endif
+                    
+                #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
+                #pragma omp critical
+                {
+                    occupancies[d]--;
+                }
+                #endif
+                #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+                gpuLoad[d] -= NNsq;
+                // nextTask assignedTo the GPU just freed
+                int myTask;
+                #pragma omp atomic capture
+                myTask = nextTask++;
+
+                if (myTask < numTasks)
+                    chosen[myTask] = d;
+                #endif
+                // }
+            } // end taskloop
+        }
+    }
+    // #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
     #pragma omp taskwait
     for(int d=0;d<ndevs;d++){
         omp_target_free(dev_pointers[d][1], d);
@@ -549,6 +560,9 @@ int main(int argc, char *argv[])
     }
 
     int check = 0;
+    #if defined(VECTORIZE)
+    transposeMatrix(b,N,K);
+    #endif
     end_timer("GPU Multiplication");
 
     std::vector<int> percent(ndevs,0);
@@ -556,9 +570,7 @@ int main(int argc, char *argv[])
     for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
     printf("\n");
     
-    #if defined(VECTORIZE)
-    transposeMatrix(b,N,K);
-    #endif
+    
 
     int lastFail = 0;
     for (int i = 0; i < numTasks; i++)

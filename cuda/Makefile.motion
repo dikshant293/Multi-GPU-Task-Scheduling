@@ -3,7 +3,7 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = clang++
+CC        = nvc++
 OPTIMIZE  = yes
 DEBUG     = no
 DEVICE    = gpu
@@ -15,7 +15,7 @@ ARCH      = gfx906
 
 TARGET = motionsim
 
-SRC = motionsim.cpp
+SRC = motionsim.cu
 
 obj = $(source:.cpp=.o)
 
@@ -42,7 +42,7 @@ ifeq ($(OPTIMIZE),yes)
 endif
 
 ifeq ($(DEVICE),gpu)
-  CFLAGS += -fopenmp -ffast-math -fopenmp-targets=nvptx64-nvidia-cuda  -fopenmp-cuda-mode -Wno-unused-variable -Wno-unused-but-set-variable -Wno-sometimes-uninitialized -Ofast -openmp-simd -openmp-extensions -foffload-lto -fopenmp-assume-no-thread-state -march=native -fno-stack-protector -funroll-loops -fomit-frame-pointer -mavx2 -ffp-contract=fast -fno-signed-zeros -freciprocal-math -fmerge-all-constants
+  CFLAGS += -I. -fast -mp=gpu -gpu=cc70 -Xcompiler "-fopenmp,-fpic" -march=native -Xlinker -znoexecstack -O3 -I. -fast  --diag_suppress declared_but_not_referenced --diag_suppress set_but_not_used -lm
 else
   CFLAGS +=-fopenmp
 endif
@@ -70,7 +70,6 @@ test: clean all
 	./$(TARGET) $(n) 0.99 $(n)
 	./$(TARGET) $(n) 0.999 $(n)
 	./$(TARGET) $(n) 0.9999 $(n)
-
 
 gran-test:
 	@$(BASE) -DSCHED_ROUNDROBIN
@@ -116,6 +115,20 @@ gran-test:
 	./$(TARGET) $(n) 1.0 $(n)
 
 	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) 0.0 $(n)
+	./$(TARGET) $(n) 0.1 $(n)
+	./$(TARGET) $(n) 0.4 $(n)
+	./$(TARGET) $(n) 0.6 $(n)
+	./$(TARGET) $(n) 0.8 $(n)
+	./$(TARGET) $(n) 0.9 $(n)
+	./$(TARGET) $(n) 0.95 $(n)
+	./$(TARGET) $(n) 0.99 $(n)
+	./$(TARGET) $(n) 0.995 $(n)
+	./$(TARGET) $(n) 0.999 $(n)
+	./$(TARGET) $(n) 0.9999 $(n)
+	./$(TARGET) $(n) 1.0 $(n)
+	
+	@$(BASE) -DSCHED_MEM
 	./$(TARGET) $(n) 0.0 $(n)
 	./$(TARGET) $(n) 0.1 $(n)
 	./$(TARGET) $(n) 0.4 $(n)
