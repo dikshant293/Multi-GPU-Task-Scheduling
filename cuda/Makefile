@@ -272,6 +272,22 @@ gran-test:
 	./$(TARGET) $(n) $(n) $(n) 0.9999
 	./$(TARGET) $(n) $(n) $(n) 1.0
 
+gran-7:
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_MEM
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
 mem:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_MEM
 	./$(TARGET) $(n) $(n) $(n) 0.0

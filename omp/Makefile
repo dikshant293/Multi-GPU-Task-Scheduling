@@ -278,5 +278,16 @@ gran-test:
 	./$(TARGET) $(n) $(n) $(n) 0.9999
 	./$(TARGET) $(n) $(n) $(n) 1.0
 
-	
+gran-7:
+	@$(BASE) -DSCHED_ROUNDROBIN
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) -DSCHED_RANDOM
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) 0.7
+
+	@$(BASE) -DSCHED_ADAPTIVE2
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	

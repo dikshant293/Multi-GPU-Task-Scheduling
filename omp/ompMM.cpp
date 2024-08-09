@@ -195,13 +195,14 @@ void transposeMatrix(float* matrix, int m, int n) {
     }
 }
 
+#define threadsPerBlock 1024
 
 inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int d, int a_items=0, int b_items=0, int c_items=0)
 {
     #if defined(PRE_TRANSFER)
-    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,1024)) thread_limit(1024) schedule (static, 1) device(d) is_device_ptr(d_a,d_b,d_c)
+    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,threadsPerBlock)) thread_limit(threadsPerBlock) schedule (static, 1) device(d) is_device_ptr(d_a,d_b,d_c)
     #else
-    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,1024)) thread_limit(1024) schedule (static, 1) device(d) is_device_ptr(d_b) map(to:d_a[0:a_items]) map(tofrom:d_c[0:c_items])
+    #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,threadsPerBlock)) thread_limit(threadsPerBlock) schedule (static, 1) device(d) is_device_ptr(d_b) map(to:d_a[0:a_items]) map(tofrom:d_c[0:c_items])
     #endif
     for(int x = 0;x<M*N;x++){
         int ii = x / N, jj = x % N;
