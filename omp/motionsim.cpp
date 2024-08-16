@@ -86,7 +86,7 @@ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int ngpus)
     return chosen;
 }
 
-inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
+inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus, int taskID)
 {
     int chosen = -1;
     while (chosen == -1)
@@ -95,10 +95,11 @@ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
         {
 #pragma omp critical
             {
-                if (occupancies[i] == 0)
+                int g = (taskID + i)%ngpus;
+                if (occupancies[g] == 0)
                 {
-                    occupancies[i]++;
-                    chosen = i;
+                    occupancies[g]++;
+                    chosen = g;
                 }
             }
             if (chosen > -1)
@@ -315,7 +316,7 @@ void motion_device(float *particleX, float *particleY,
         #elif defined(SCHED_DYNAMIC)
         const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
         #elif defined(SCHED_DYNAMIC2)
-        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs, i);
         #else
         const int dev = 0;
         #endif
@@ -467,22 +468,22 @@ int main(int argc, char *argv[])
     // Allocate arrays
 
     // Stores a grid of cells
-    int **grid = new int *[grid_size];
-    grid[0] = new int[grid_size*grid_size];
+    int **grid = (int**)malloc(grid_size * sizeof(int*));
+    grid[0] = (int*)malloc(grid_size*grid_size * sizeof(int));
     for (size_t i = 0; i < grid_size; i++)
         grid[i] = grid[0] + grid_size*i;
 
     // Stores all random numbers to be used in the simulation
-    float *randomX = new float[n_particles * nIterations];
-    float *randomY = new float[n_particles * nIterations];
+    float *randomX = (float*)malloc(n_particles*nIterations*sizeof(float));
+    float *randomY = (float*)malloc(n_particles*nIterations*sizeof(float));
 
     // Stores X and Y position of particles in the cell grid
-    float *particleX = new float[n_particles];
-    float *particleY = new float[n_particles];
+    float *particleX = (float*)malloc(n_particles*sizeof(float));
+    float *particleY = (float*)malloc(n_particles*sizeof(float));
 
     // 'map' array replicates grid to be used by each particle
     const size_t MAP_SIZE = n_particles * grid_size * grid_size;
-    size_t *map = new size_t[MAP_SIZE];
+    size_t *map = (size_t*)malloc(MAP_SIZE*sizeof(size_t));
     printf("nparticles = %d niterations = %d granularity = %lf\n",n_particles,nIterations,granularity);
     std::cout<<"total memory = "<<(float)(2 * n_particles * (nIterations + 1) * sizeof(float) + n_particles * grid_size * grid_size * sizeof(size_t))/1024/1024/1024<<" GB"<<std::endl;
     // Initialize arrays

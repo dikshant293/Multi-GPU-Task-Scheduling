@@ -219,8 +219,8 @@ gran-test:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ROUNDROBIN
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -233,8 +233,8 @@ gran-test:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_RANDOM
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -247,8 +247,8 @@ gran-test:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC2
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -261,8 +261,8 @@ gran-test:
 	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_ADAPTIVE2
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -371,3 +371,18 @@ streams:
 	./$(TARGET) $(n) $(n) $(n) $(g) 0 0 256
 	./$(TARGET) $(n) $(n) $(n) $(g) 0 0 512
 	./$(TARGET) $(n) $(n) $(n) $(g) 0 0 1024
+
+dyn:
+	@$(BASE) $(PRELOADFLAG) $(VECFLAG) $(OMPFLAG) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0

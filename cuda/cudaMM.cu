@@ -17,6 +17,7 @@
 #include <numeric>
 #include <cmath>
 #include <ctime>
+#include <random>
 
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
@@ -29,23 +30,10 @@
 #define MM
 #define PSIZE 2000
 
-#define EPSILON 1e-4
+#define EPSILON 1e-6
 
-// #define SCHED_ROUNDROBIN
-// #define SCHED_DYNAMIC
-// #define SCHED_DYNAMIC2
-// #define SCHED_RANDOM
-// #define SCHED_ADAPTIVE
-// #define SCHED_ADAPTIVE2
-
-// using data_type = float;
 
 std::mutex mtx;
-// Define the global variable
-// __device__ int d_counter = 0;
-
-// #define USEOPENMP
-// #define PRE_TRANSFER
 
 __host__ inline cudaError_t checkCuda(cudaError_t status)
 {
@@ -91,7 +79,6 @@ __host__ inline unsigned gpu_scheduler_dynamic_ad(unsigned long *gpuLoad, int ng
     return chosen;
 }
 
-// This version avoids all CPU threads finding the same GPU greedily (and therefore overloading that GPU)
 __host__ inline unsigned gpu_scheduler_dynamic_ad2(unsigned long *gpuLoad, int ngpus, int taskWeight)
 {
     short looking = 1;
@@ -128,7 +115,7 @@ __host__ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int
     return chosen;
 }
 
-__host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
+__host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus, int taskID)
 {
     int chosen = -1;
     while (chosen == -1)
@@ -137,10 +124,11 @@ __host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int n
         {
 #pragma omp critical
             {
-                if (occupancies[i] == 0)
+                int g = (taskID + i)%ngpus;
+                if (occupancies[g] == 0)
                 {
-                    occupancies[i]++;
-                    chosen = i;
+                    occupancies[g]++;
+                    chosen = g;
                 }
             }
             if (chosen > -1)
@@ -220,17 +208,10 @@ void transposeMatrix(float* matrix, int m, int n) {
 // Kernel for matrix-matrix multiplication
 __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int K)
 {
-    // int i = blockIdx.y * blockDim.y + threadIdx.y;
-    // int j = blockIdx.x * blockDim.x + threadIdx.x;
-    // // i += rowStart;
-    // printf("i inc = %d j inc = %d\n",blockDim.y*gridDim.y,blockDim.x*gridDim.x);
     for(int i = blockIdx.y * blockDim.y + threadIdx.y;i<M;i+=blockDim.y*gridDim.y){
         for(int j = blockIdx.x * blockDim.x + threadIdx.x;j<N;j+=blockDim.x*gridDim.x)
-    // if(i < M and j < N)
             {
-                // atomicAdd(&d_counter, 1);
-                float sum = 0.0;
-                
+                float sum = 0.0;   
                 #if defined(VECTORIZE)
                 auto a = reinterpret_cast<float4*>(&A[i * K]);
                 auto b = reinterpret_cast<float4*>(&B[j * K]);
@@ -246,15 +227,8 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
                     sum += A[i * K + k] * B[j * K + k];
                 #endif
                 C[i * N + j] = sum;
-
-                
-            // printf("\n-------------\n");
             }
     }
-}
-
-__global__ void gpu_check(int i, int d){
-    printf("task %d on GPU %d done\n", i, d);
 }
 
 void printMatrix(float *mat, int m, int n){
@@ -270,7 +244,6 @@ void printMatrix(float *mat, int m, int n){
 __global__ void printMatrixKernel(float* matrix, int width, int height) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
     int idy = threadIdx.y + blockIdx.y * blockDim.y;
-
     if (idx < width && idy < height) {
         printf("Element at [%d, %d]: %f\n", idy, idx, matrix[idy * width + idx]);
     }
@@ -280,10 +253,10 @@ void printMatrixGPU(float *mat, int m, int n){
     dim3 blocksPerGrid((n+min(MAX_TPB,n)-1)/min(MAX_TPB,n), (m+min(MAX_TPB,m)-1)/min(MAX_TPB,m));
     dim3 threadsPerBlock(min(MAX_TPB,n), min(MAX_TPB,m)); // Assuming width and height are within max threads per block limit 
     printMatrixKernel<<<blocksPerGrid, threadsPerBlock>>>(mat, n, m);
-    // Wait for GPU to finish before accessing on host
     cudaDeviceSynchronize();
 }
 
+// global clock timer
 auto clk = std::chrono::high_resolution_clock::now();
 
 void start_timer(){
@@ -401,6 +374,46 @@ std::vector<int> generateRandomChunkStartIndices(int n, int m) {
     return startIndexes;
 }
 
+std::vector<int> generateChunkStartIndicesWithSD(int n, int m, double sd) {
+    std::vector<int> startIndexes;
+    std::vector<int> chunkSizes(m);
+    int sumOfSizes = 0;
+    
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<> dist(n / m, sd);  // Normal distribution centered around the base size
+
+    // Generate initial chunk sizes
+    for (int i = 0; i < m; ++i) {
+        int size = std::round(dist(gen));  // Generate and round to nearest integer
+        chunkSizes[i] = size > 0 ? size : 0;  // Ensure no negative sizes
+        sumOfSizes += chunkSizes[i];
+    }
+
+    // Adjust the chunk sizes to exactly sum up to 'n'
+    int error = sumOfSizes - n;
+    while (error != 0) {
+        for (int i = 0; i < m && error != 0; ++i) {
+            if (error > 0 && chunkSizes[i] > 0) {  // Need to reduce the sum
+                chunkSizes[i]--;
+                error--;
+            } else if (error < 0) {  // Need to increase the sum
+                chunkSizes[i]++;
+                error++;
+            }
+        }
+    }
+
+    // Generate starting indices from adjusted chunk sizes
+    int startIndex = 0;
+    for (int size : chunkSizes) {
+        startIndexes.push_back(startIndex);
+        startIndex += size;
+    }
+
+    return startIndexes;
+}
+
 int main(int argc, char **argv)
 {
     int ndevs = 0;
@@ -415,22 +428,17 @@ int main(int argc, char **argv)
     // Output the number of GPUs
     printf("Number of GPUs available: %d\n", ndevs);
     int *devices = (int *)calloc(ndevs, sizeof(*devices));
-    // double start_iterations, end_iterations;
     unsigned *lastGPU = NULL;
 
-    //  int chosen[N];
     unsigned *occupancies = (unsigned *)calloc(ndevs, sizeof(*occupancies));
     unsigned long *gpuLoad = (unsigned long *)calloc(ndevs, sizeof(*gpuLoad));
     
     int timestep = 1;
-    // int probSize = MAXWORK;
     int numThreads = 64;
     int numThreadsPerBlock = 1024;
-    // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
     int streams_per_gpu = 4;
-    // srand((unsigned)time(NULL));
     float granularity = 0.9;
     int chunk = 0;
     if (argc <= 1)
@@ -494,37 +502,38 @@ int main(int argc, char **argv)
     checkCuda(cudaMallocHost(&c,c_size*sizeof(float)));
 
     int *taskWork = (int *)malloc(sizeof(int) * numTasks);
-
     int *chosen = (int *)malloc(sizeof(int) * numTasks);
     int *success = (int *)malloc(sizeof(int) * numTasks);
 
-    // initialize
-
+    // initialize matrices
     for (int i = 0; i < a_size; i++)
-        // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        a[i] = i%4;
+        a[i] = i%4; // can be replace with any random value
 
     for (int i = 0; i < b_size; i++)
-        // b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        b[i] = 4+i%3;
+        b[i] = 4+i%3; // can be replace with any random value
 
     for (int i = 0; i < c_size; i++)
-        c[i] = 0.0;
+        c[i] = 0.0; // can be replace with any random value
 
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, numTasks);;
     
     if(chunk==1) startIndexes = generateUniformChunkStartIndices(M, numTasks);
     if(chunk==2) startIndexes = generateRandomChunkStartIndices(M, numTasks);
-    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
+    if(chunk==3){
+        float sd = 10.0;
+        if(argc>8) sd = atof(argv[8]);
+        startIndexes = generateChunkStartIndicesWithSD(M, numTasks, sd);
+    }
 
+    // print standard deviation and mean of the chunk sizes
+    std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
     printf("Task Sizes: ");
     calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
 
     std::vector<float*> d_a_global(ndevs), d_b_global(ndevs), d_c_global(ndevs);
-
     std::vector<std::thread> threads;
 
-    
+    // print what flags are set and not set
     #if defined(VECTORIZE)
     printf("vectorized,\t");
     #else
@@ -543,6 +552,7 @@ int main(int argc, char **argv)
     printf("2d blocks\t");
     #endif
     
+    // defining and initializing the streams for each GPU
     std::vector<std::vector<cudaStream_t>> streams(ndevs,std::vector<cudaStream_t>(streams_per_gpu));
     #pragma omp parallel for schedule(static,1)
     for(int d=0;d<ndevs;d++){
@@ -570,8 +580,8 @@ int main(int argc, char **argv)
         return temp;
     };
     
-
     start_timer();
+    // transpose B matrix for better cache locality
     transposeMatrix(b,K,N);
 
     #if defined(PRE_TRANSFER)
@@ -604,15 +614,14 @@ int main(int argc, char **argv)
     #endif
     int nextTask = ndevs;
 
+    // start CPU threads for task scheduling and distribution
     #if defined(USEOPENMP)
     #pragma omp parallel for schedule(static,1)
     #endif
     for (int i = 0; i < numTasks; i++){
-        // printf("thread %d\ti %d\n",omp_get_thread_num(),i);
         #if not defined(USEOPENMP)
         threads.push_back(std::thread([&,i](){
         #endif
-            // int start = i*rowsPerTask, end = MIN((i+1)*rowsPerTask,M);
             int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
             int nRows = end-start;
             float *d_a, *d_b, *d_c;
@@ -624,6 +633,7 @@ int main(int argc, char **argv)
             
             const int NNsq = c_items;
 
+            // get target GPU from scheduling strategy
             #if defined(SCHED_ROUNDROBIN)
             const int dev = gpu_scheduler_static_rr(i, ndevs);
             #elif defined(SCHED_ADAPTIVE)
@@ -635,7 +645,7 @@ int main(int argc, char **argv)
             #elif defined(SCHED_DYNAMIC)
             const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
             #elif defined(SCHED_DYNAMIC2)
-            const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+            const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs, i);
             #elif defined(SCHED_MEM)
             const int dev = gpu_scheduler_mem(ndevs,i);
             #else
@@ -645,13 +655,10 @@ int main(int argc, char **argv)
                 chosen[i] = dev;
             success[i] = 0;
 
-            // assert(0 <= chosen[i] < ndevs);
             int d = chosen[i]; // assert(0 <= chosen[i] <= ndevs-1)
 
             devices[d]++;
-
             int nxt = nxt_strm(strm_ctr[d]);
-            // printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
             
             cudaSetDevice(d);
             auto stream = streams[d][nxt];
@@ -667,7 +674,7 @@ int main(int argc, char **argv)
             cudaMallocAsync(&d_c,c_items*sizeof(float),stream);
             cudaMemcpyAsync(d_c,c+c_start,c_items*sizeof(float),cudaMemcpyHostToDevice,stream);
             
-            
+            // define block and threads per block
             int blk_x = min(MAX_TPB,n), blk_y = min(MAX_TPB,m);
             #if defined(USE1D)
             dim3 blocksPerGrid(CEIL(m*n,numThreadsPerBlock),1);
@@ -676,8 +683,8 @@ int main(int argc, char **argv)
             dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
             dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
             #endif
-            // printf(" %d %d\n",blocksPerGrid.x,threadsPerBlock.x);
             
+            // launch kernel
             #if defined(PRE_TRANSFER)
             multiply_kernel<<<blocksPerGrid,threadsPerBlock,0,stream>>>(d_a,d_b_global[d],d_c,m,n,k);
             #else
@@ -685,13 +692,12 @@ int main(int argc, char **argv)
             #endif
             cudaMemcpyAsync(c+c_start,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost,stream);
 
+            // free task allocated memory
             cudaFreeAsync(d_a,stream);
             #if not defined(PRE_TRANSFER)
             cudaFreeAsync(d_b,stream);
             #endif
             cudaFreeAsync(d_c,stream);
-            
-            // gpu_check<<<1,1,0,stream>>>(i,d);
 
             #if defined(SCHED_RANDOM) || defined(SCHED_DYNAMIC) || defined(SCHED_DYNAMIC2)
             success[i] = 1;
@@ -711,7 +717,6 @@ int main(int argc, char **argv)
             myTask = nextTask++;
             if(myTask < numTasks) chosen[myTask] = d;
             #endif
-            // printf("dev %d [%d] (%d,%d) GPU, stream: [%d, %d]\n",d,i,start,end,d,nxt);
         
         #if not defined(USEOPENMP)
         }));
@@ -737,6 +742,7 @@ int main(int argc, char **argv)
 
     joinThreads(threads);
 
+    // free pre-transferred memory (if any)
     #if defined(PRE_TRANSFER)
     #if defined(USEOPENMP)
     #pragma omp parallel for schedule(static,1)
@@ -761,15 +767,15 @@ int main(int argc, char **argv)
     transposeMatrix(b,N,K);
     end_timer("GPU multiplication");
 
-
+    // print % distribution of tasks across GPUs
     std::vector<int> percent(ndevs,0);
     for(int i=0;i<numTasks;i++) percent[chosen[i]]++;
     for(int i=0;i<ndevs;i++) printf("GPU %d: %0.2lf  ",i,(double)percent[i]/numTasks);
     printf("\n"); 
 
+    // check result correctness
     if(check_result){
         float *c_cpu;
-        // checkCuda(cudaMallocHost(&c_cpu,c_size*sizeof(float)));
         c_cpu = (float*)malloc(c_size*sizeof(float));
         start_timer();
         printf("GPU Done... now checking correctness\n");
@@ -788,16 +794,16 @@ int main(int argc, char **argv)
         {
             for (int j = 0; j < N; j++){
                 float x = c[i * N + j], y = c_cpu[i * N + j];
-                if (x != y && ABS((x - y)) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
+                if (x != y && ABS((x - y)) > EPSILON)
                 {
                     printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS((x - y)));
                     flag = false;
                     mismatches++;
-                    // break;
+                    break;
                 }
             }
-            // if (!flag)
-            //     break;
+            if (!flag)
+                break;
         }
         printf("Correctness check: %s (mismatches = %d)\n",(flag ? "PASSED" : "FAILED"), mismatches);
         cudaFreeHost(c_cpu);

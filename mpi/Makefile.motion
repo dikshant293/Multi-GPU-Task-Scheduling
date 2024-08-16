@@ -35,13 +35,13 @@ CMD=
 # a) mpi-omp
 # b) mpi-cuda
 ifeq ($(API),mpi-omp)
-   SRC=mpi_matmul.cpp
-   OBJ=mpi_matmul
+   SRC=mpi_motionsim.cpp
+   OBJ=mpi_motionsim
    CFLAGS+=-DUSEOPENMP -DVECTORIZE
 else ifeq ($(API),mpi-cuda)
-   SRC=mpi_matmul.cu
-   OBJ=mpi_matmul
-   CMD=cp mpi_matmul.cpp mpi_matmul.cu
+   SRC=mpi_motionsim.cu
+   OBJ=mpi_motionsim
+   CMD=cp mpi_motionsim.cpp mpi_motionsim.cu
    CFLAGS+=-DVECTORIZE
 endif
 
@@ -61,7 +61,7 @@ all: clean
 
 n=20000
 test: clean all
-	$(TARGET) $(n) $(n) $(n)
+	$(TARGET) $(n) 0.0 $(n)
 
 clean:
 	rm -rf $(OBJ) $(OBJ).cu

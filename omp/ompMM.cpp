@@ -20,34 +20,19 @@
 #include <vector_types.h>
 #endif
 
-// Input data distribution
 #define RANDOM_SIZED_TASKS
-// #define INCREASING_SIZED_TASKS
 #define LOWERLT 128
 
-// Application problem
 #define MM
 #define PSIZE 20
 #define MAXWORK 10
 #define MAX_LOOP 10
-
-// Scheduling strategies, unset all to use the compact schedue
-
-// #define SCHED_ROUNDROBIN
-// #define SCHED_DYNAMIC
-// #define SCHED_DYNAMIC2
-// #define SCHED_RANDOM
-// #define SCHED_ADAPTIVE
-// #define SCHED_ADAPTIVE2
-
 
 #define CEIL(x, y) (((x) + (y) - 1) / (y))
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define ABS(x) (((x) < (0)) ? (-x) : (x))
 #define EPSILON 1e-6
-
-// using data_type = float;
 
 inline unsigned gpu_scheduler_static_rr(int taskID, int ngpus)
 {
@@ -82,7 +67,6 @@ inline unsigned gpu_scheduler_dynamic_ad(unsigned long *gpuLoad, int ngpus, int 
     return chosen;
 }
 
-// This version avoids all CPU threads finding the same GPU greedily (and therefore overloading that GPU)
 inline unsigned gpu_scheduler_dynamic_ad2(unsigned long *gpuLoad, int ngpus, int taskWeight)
 {
     short looking = 1;
@@ -119,7 +103,7 @@ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int ngpus)
     return chosen;
 }
 
-inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
+inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus, int taskID)
 {
     int chosen = -1;
     while (chosen == -1)
@@ -128,10 +112,11 @@ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
         {
 #pragma omp critical
             {
-                if (occupancies[i] == 0)
+                int g = (taskID + i)%ngpus;
+                if (occupancies[g] == 0)
                 {
-                    occupancies[i]++;
-                    chosen = i;
+                    occupancies[g]++;
+                    chosen = g;
                 }
             }
             if (chosen > -1)
@@ -199,6 +184,7 @@ void transposeMatrix(float* matrix, int m, int n) {
 
 inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, int d, int a_items=0, int b_items=0, int c_items=0)
 {
+    // launch kernel
     #if defined(PRE_TRANSFER)
     #pragma omp target teams distribute parallel for num_teams(CEIL(M*N,threadsPerBlock)) thread_limit(threadsPerBlock) schedule (static, 1) device(d) is_device_ptr(d_a,d_b,d_c)
     #else
@@ -220,7 +206,6 @@ inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, in
         #else
         for (int kk = 0; kk < K; kk++){
             sum += d_a[ii * K + kk] * d_b[kk * N + jj];
-            // sum += d_a[ii * K + kk] * d_b[jj * K + kk];
         }
         #endif
         d_c[ii * N + jj] = sum;
@@ -333,19 +318,14 @@ int main(int argc, char *argv[])
     double start_iterations, end_iterations;
     unsigned *lastGPU = NULL;
 
-    //  int chosen[N];
     unsigned *occupancies = (unsigned *)calloc(ndevs, sizeof(*occupancies));
     unsigned long *gpuLoad = (unsigned long *)calloc(ndevs, sizeof(*gpuLoad));
 
     int timestep = 1;
-    // int probSize = MAXWORK;
     int numThreads = 64;
-    int numThreadsPerBlock = 256;
-    // numThreads = omp_get_num_threads();
     int M = PSIZE, N = PSIZE, K = PSIZE;
     int check_result = 0;
     int chunk = 0;
-    // srand((unsigned)time(NULL));
     float granularity = 0.9;
     if (argc <= 1)
     {
@@ -378,9 +358,6 @@ int main(int argc, char *argv[])
 
     int rowsPerTask = MAX(1, (1.0 - granularity) * M);
     int numTasks = CEIL(M,rowsPerTask);
-    // int streams_per_gpu = CEIL(numTasks,ndevs);
-    int streams_per_gpu = 32;
-    numThreadsPerBlock = CEIL(1024,streams_per_gpu);
     printf("bench_works [m=%d] [n=%d] [k=%d] [numTasks=%d] [granularity=%lf] [rowsPerTask=%d]\n",
             M, N, K, numTasks, granularity, rowsPerTask);
 
@@ -394,25 +371,23 @@ int main(int argc, char *argv[])
     int *chosen = (int *)malloc(sizeof(int) * numTasks);
     int *success = (int *)malloc(sizeof(int) * numTasks);
 
-    // initialize
-
+    // initialize matrices
     for (int i = 0; i < a_size; i++)
-        // a[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        a[i] = i%4;
+        a[i] = i%4; // can be replace with any random value
 
     for (int i = 0; i < b_size; i++)
-        // b[i] = (float)rand() / RAND_MAX * 2.0 - 1.0;
-        b[i] = 4+i%3;
+        b[i] = 4+i%3; // can be replace with any random value
 
     for (int i = 0; i < c_size; i++)
-        c[i] = 0.0;
+        c[i] = 0.0; // can be replace with any random value
 
     int ctaskwork;
 
     double cpu_time = 0.0;
     double task_time = 0.0;
-    int nextTask = ndevs; // this is needed only for the ad2 and ad strategy
+    int nextTask = ndevs;
 
+    // print what flags are set and not set
     #if defined(SCHED_ROUNDROBIN)
     printf("gpu_scheduler_static_rr\n");
     #elif defined(SCHED_ADAPTIVE)
@@ -444,7 +419,7 @@ int main(int argc, char *argv[])
     
     if(chunk==1) startIndexes = generateUniformChunkStartIndices(M, numTasks);
     if(chunk==2) startIndexes = generateRandomChunkStartIndices(M, numTasks);
-    
+    // print standard deviation and mean of the chunk sizes
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
     printf("Task Sizes: ");
     calculateStandardDeviation(chunkSizes, calculateMean(chunkSizes));
@@ -472,12 +447,15 @@ int main(int argc, char *argv[])
         omp_target_memcpy(dev_pointers[d][2], c, c_size * sizeof(float), 0, 0, d, host_id);
         #endif
     }
+    
+    // start CPU threads for task scheduling and distribution
 
-    #pragma omp parallel
-    {
-        #pragma omp single
-        {
-            #pragma omp taskloop grainsize(1) shared(success, nextTask, chosen, startIndexes, chunkSizes)
+    // #pragma omp parallel
+    // {
+    //     #pragma omp single
+    //     {
+            // #pragma omp taskloop grainsize(1) shared(success, nextTask, chosen, startIndexes, chunkSizes)
+            #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
             for (int i = 0; i < numTasks; i++)
             {
                 int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
@@ -490,6 +468,7 @@ int main(int argc, char *argv[])
                 
                 const int NNsq = c_items;
                 
+                // get target GPU from scheduling strategy
                 #if defined(SCHED_ROUNDROBIN)
                 const int dev = gpu_scheduler_static_rr(i, ndevs);
                 #elif defined(SCHED_ADAPTIVE)
@@ -501,7 +480,7 @@ int main(int argc, char *argv[])
                 #elif defined(SCHED_DYNAMIC)
                 const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
                 #elif defined(SCHED_DYNAMIC2)
-                const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+                const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs, i);
                 #else
                 const int dev = 0;
                 #endif
@@ -548,10 +527,10 @@ int main(int argc, char *argv[])
                 #endif
                 // }
             } // end taskloop
-        }
-    }
+    //     }
+    // }
     // #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
-    #pragma omp taskwait
+    // #pragma omp taskwait
     for(int d=0;d<ndevs;d++){
         omp_target_free(dev_pointers[d][1], d);
         #if defined(PRE_TRANSFER)
@@ -585,8 +564,7 @@ int main(int argc, char *argv[])
         printf("failed! LastFailed %d \n", lastFail);
     }
 
-
-    // printf("Total number of CPU threads=%d\n", omp_get_num_threads());
+    // check correctness
     if(check_result){
         printf("GPU Done... now checking correctness\n");
 
@@ -606,7 +584,7 @@ int main(int argc, char *argv[])
             for (int j = 0; j < N; j++){
                 float x = c[i * N + j], y = c_cpu[i * N + j];
                 float diff = x-y;
-                if (x != y && ABS(diff) > EPSILON) // float precision comparision upto 10^-6 for types like doubles
+                if (x != y && ABS(diff) > EPSILON)
                 {
                     printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS(diff));
                     flag = false;
@@ -617,7 +595,6 @@ int main(int argc, char *argv[])
                 break;
         }
         printf("Correctness check: %s\n",(flag ? "PASSED" : "FAILED"));
-        // printMatrix(a,M,K);printMatrix(b,K,N);printMatrix(c,M,N);printMatrix(c_cpu,M,N);
         free(c_cpu);
     }
 

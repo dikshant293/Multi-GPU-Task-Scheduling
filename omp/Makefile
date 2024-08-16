@@ -6,7 +6,7 @@ COMPILER    = llvm_nv
 OPTIMIZE    = yes
 DEBUG       = no
 PROFILE     = no
-SM = cc70   # --- NVIDIA arch
+SM = cc80   # --- NVIDIA arch
 ARCH = gfx90a # --- AMD arch
 ENABLE_ASYN = 1
 SAVE_TEMP = 0
@@ -62,7 +62,7 @@ endif
 ifeq ($(COMPILER),nvhpc)
   CC = nvc++
   #CFLAGS += -mp=gpu -gpu=managed
-  CFLAGS += -mp=gpu -gpu=${SM} --diag_suppress declared_but_not_referenced --diag_suppress set_but_not_used
+  CFLAGS += -mp=gpu -gpu=${SM} -I. -fast -Xcompiler "-fopenmp,-fpic" -march=native -Xlinker -znoexecstack -Munroll=c:4 -Mvect=simd:256 --diag_suppress declared_but_not_referenced --diag_suppress set_but_not_used -o cuda_nvhpc  -lm
   #CFLAGS += -mp=gpu -Minfo=mp -gpu=${SM}
 endif
 
@@ -139,7 +139,7 @@ run: clean
 	./$(TARGET) 20 20 20 0.9 0 1
 
 n=20000
-g=0.99
+g=0.999
 tpb=256
 
 load: clean
@@ -225,8 +225,8 @@ gran-test:
 	@$(BASE) -DSCHED_ROUNDROBIN
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -239,8 +239,8 @@ gran-test:
 	@$(BASE) -DSCHED_RANDOM
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -253,8 +253,8 @@ gran-test:
 	@$(BASE) -DSCHED_DYNAMIC2
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -267,8 +267,8 @@ gran-test:
 	@$(BASE) -DSCHED_ADAPTIVE2
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.4
 	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
 	./$(TARGET) $(n) $(n) $(n) 0.8
 	./$(TARGET) $(n) $(n) $(n) 0.9
 	./$(TARGET) $(n) $(n) $(n) 0.95
@@ -291,3 +291,17 @@ gran-7:
 	@$(BASE) -DSCHED_ADAPTIVE2
 	./$(TARGET) $(n) $(n) $(n) 0.7
 	
+dyn:
+	@$(BASE) -DSCHED_DYNAMIC2
+	./$(TARGET) $(n) $(n) $(n) 0.0
+	./$(TARGET) $(n) $(n) $(n) 0.1
+	./$(TARGET) $(n) $(n) $(n) 0.6
+	./$(TARGET) $(n) $(n) $(n) 0.7
+	./$(TARGET) $(n) $(n) $(n) 0.8
+	./$(TARGET) $(n) $(n) $(n) 0.9
+	./$(TARGET) $(n) $(n) $(n) 0.95
+	./$(TARGET) $(n) $(n) $(n) 0.99
+	./$(TARGET) $(n) $(n) $(n) 0.995
+	./$(TARGET) $(n) $(n) $(n) 0.999
+	./$(TARGET) $(n) $(n) $(n) 0.9999
+	./$(TARGET) $(n) $(n) $(n) 1.0

@@ -98,7 +98,7 @@ __host__ inline unsigned gpu_scheduler_dynamic_random(unsigned *occupancies, int
     return chosen;
 }
 
-__host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus)
+__host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int ngpus, int taskID)
 {
     int chosen = -1;
     while (chosen == -1)
@@ -107,10 +107,11 @@ __host__ inline unsigned gpu_scheduler_dynamic_occ2(unsigned *occupancies, int n
         {
 #pragma omp critical
             {
-                if (occupancies[i] == 0)
+                int g = (taskID + i)%ngpus;
+                if (occupancies[g] == 0)
                 {
-                    occupancies[i]++;
-                    chosen = i;
+                    occupancies[g]++;
+                    chosen = g;
                 }
             }
             if (chosen > -1)
@@ -450,7 +451,7 @@ void motion_device(float *particleX, float *particleY,
 #elif defined(SCHED_DYNAMIC)
         const int dev = gpu_scheduler_dynamic_occ(occupancies, ndevs);
 #elif defined(SCHED_DYNAMIC2)
-        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs);
+        const int dev = gpu_scheduler_dynamic_occ2(occupancies, ndevs, i);
 #elif defined(SCHED_MEM)
         const int dev = gpu_scheduler_mem(ndevs, i);
 #else
