@@ -45,22 +45,15 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
 {
     for(int i = blockIdx.y * blockDim.y + threadIdx.y;i<M;i+=blockDim.y*gridDim.y){
         for(int j = blockIdx.x * blockDim.x + threadIdx.x;j<N;j+=blockDim.x*gridDim.x)
-    // if(i < M and j < N)
             {
-                // atomicAdd(&d_counter, 1);
                 float sum = 0.0;
                 
                 #if defined(VECTORIZE)
                 auto a = reinterpret_cast<float4*>(&A[i * K]);
                 auto b = reinterpret_cast<float4*>(&B[j * K]);
-                // printf("check %d %d (%p %p) (%p %p) %d\n",i*K*4,j*K*4,a,&A[i * K],b,&B[j * K],K/4);
                 for (int k = 0; k < K/4; k++)
                 {
-                    // printf("before\n");
-                    // auto a = a_4[k], b = b_4[k];
-                    // printf("%f,%f,%f,%f %f,%f,%f,%f\n",a.w,a.x,a.y,a.z,b.w,b.x,b.y,b.z);
                     sum += a->x*b->x + a->y*b->y + a->z*b->z + a->w*b->w;
-                    // printf("(%f,%f)\n",a->w,b->w);
                     a++;
                     b++;
                 }
@@ -70,9 +63,6 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
                     sum += A[i * K + k] * B[j * K + k];
                 #endif
                 C[i * N + j] = sum;
-
-                
-            // printf("\n-------------\n");
             }
     }
 }
@@ -171,7 +161,6 @@ inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, in
         
         #else
         for (int kk = 0; kk < K; kk++){
-            // sum += d_a[ii * K + kk] * d_b[kk * N + jj];
             sum += d_a[ii * K + kk] * d_b[jj * K + kk];
         }
         #endif
@@ -194,7 +183,6 @@ int main(int argc, char **argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     int check_result = 0;
-    // printf("world size %d rank %d GPUs %d\n",world_size,world_rank,ndevs);
 
     int M = PSIZE, N = PSIZE, K = PSIZE;
     if (argc <= 1)
@@ -214,14 +202,15 @@ int main(int argc, char **argv) {
             check_result = atoi(argv[4]);
     }
     int a_size = M * K, b_size = K * N, c_size = M * N;
-
+    // we spawn total rank number of tasks
     int numRowsPerRank = CEIL(M,world_size);
     
     std::vector<int> startIndexes = generateEqualChunkStartIndices(M, world_size);;
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
 
     checkMPIError(MPI_Barrier(MPI_COMM_WORLD));
-        
+    
+    // start and end indexes for the current rank
     int start = startIndexes[world_rank], end = (world_rank==world_size-1 ? M : startIndexes[world_rank+1]);
     int nRows = end-start;
     int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
@@ -231,6 +220,7 @@ int main(int argc, char **argv) {
     a_items = nRows*K; b_items = K*N; c_items = nRows*N;
     MPI_Status stat;
 
+    // initialize the matrices on rank 0
     float *a,*b,*c;
     if (world_rank == 0) {
         #if defined(USEOPENMP)
@@ -269,7 +259,7 @@ int main(int argc, char **argv) {
         #endif
     }
 
-
+    // transferring initialized data to other ranks as per requirement
     float *h_a, *h_b, *h_c;
     if(world_rank==0){
         h_a = a+a_start;
@@ -300,13 +290,11 @@ int main(int argc, char **argv) {
         checkMPIError(MPI_Recv(h_c,c_items,MPI_FLOAT,0,3,MPI_COMM_WORLD,&stat));
     }
 
-    transposeMatrix(h_b,K,N);
-
-    
+    transposeMatrix(h_b,K,N);    
 
     #if defined(USEOPENMP)
     multiply(h_a,h_b,h_c,m,n,k,a_items,b_items,c_items);
-    #else
+    #else // if MPI+CUDA
     float *d_a,*d_b,*d_c;
 
     cudaMalloc(&d_a,a_items*sizeof(float));
@@ -334,6 +322,7 @@ int main(int argc, char **argv) {
 
     transposeMatrix(h_b,N,K);
 
+    // transferring computed data back to rank 0
     if(world_rank==0){
         h_a = a+a_start;
         h_b = b+b_start;
@@ -347,12 +336,11 @@ int main(int argc, char **argv) {
     else{
         checkMPIError(MPI_Send(h_c,c_items,MPI_FLOAT,0,4,MPI_COMM_WORLD));
     }
-
+    // correctness check
     if(world_rank==0){
         end_timer("GPU Multiplication");
         if(check_result){
             float *c_cpu;
-            // checkCuda(cudaMallocHost(&c_cpu,c_size*sizeof(float)));
             c_cpu = (float*)malloc(c_size*sizeof(float));
             start_timer();
             printf("GPU Done... now checking correctness\n");
@@ -365,24 +353,22 @@ int main(int argc, char **argv) {
                 }
             end_timer("CPU multiplication");
 
-            // printMatrix(c_cpu,M,N);
-
             bool flag = true;
             int mismatches = 0;
             for (int i = 0; i < M; i++)
             {
                 for (int j = 0; j < N; j++){
                     float x = c[i * N + j], y = c_cpu[i * N + j];
-                    if (x != y && ABS((x - y)) > EPSILON) // data_type precision comparision upto 10^-6 for types like doubles
+                    if (x != y && ABS((x - y)) > EPSILON)
                     {
                         printf("(%d,%d) : got %lf expected %lf diff %e\n",i,j,x,y,ABS((x - y)));
                         flag = false;
                         mismatches++;
-                        // break;
+                        break;
                     }
                 }
-                // if (!flag)
-                //     break;
+                if (!flag)
+                    break;
             }
             printf("Correctness check: %s (mismatches = %d)\n",(flag ? "PASSED" : "FAILED"), mismatches);
             free(c_cpu);

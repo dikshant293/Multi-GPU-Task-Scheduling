@@ -41,3 +41,5 @@ cuda/test.txt
 hlp
 omp/prototype.cpp
 mpi/mpi_matmul.cu
+cuda/motionsim
+motion/

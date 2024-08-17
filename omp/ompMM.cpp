@@ -450,12 +450,12 @@ int main(int argc, char *argv[])
     
     // start CPU threads for task scheduling and distribution
 
-    // #pragma omp parallel
-    // {
-    //     #pragma omp single
-    //     {
-            // #pragma omp taskloop grainsize(1) shared(success, nextTask, chosen, startIndexes, chunkSizes)
-            #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
+            // #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            #pragma omp taskloop grainsize(1) shared(success, nextTask, chosen, startIndexes, chunkSizes)
             for (int i = 0; i < numTasks; i++)
             {
                 int start = startIndexes[i], end = (i==numTasks-1 ? M : startIndexes[i+1]);
@@ -527,10 +527,10 @@ int main(int argc, char *argv[])
                 #endif
                 // }
             } // end taskloop
-    //     }
-    // }
+        }
+    }
+    #pragma omp taskwait
     // #pragma omp parallel for shared(success, nextTask, chosen, startIndexes, chunkSizes) schedule(static,1)
-    // #pragma omp taskwait
     for(int d=0;d<ndevs;d++){
         omp_target_free(dev_pointers[d][1], d);
         #if defined(PRE_TRANSFER)
