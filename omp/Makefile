@@ -142,85 +142,6 @@ n=20000
 g=0.999
 tpb=256
 
-load: clean
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-
-gran:
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) 0.0
-	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.5
-	./$(TARGET) $(n) $(n) $(n) 0.9
-	./$(TARGET) $(n) $(n) $(n) 0.99
-	./$(TARGET) $(n) $(n) $(n) 0.999
-	./$(TARGET) $(n) $(n) $(n) 0.9999
-	./$(TARGET) $(n) $(n) $(n) 0.99999
-	@rm -rf cmp $(TARGET)
-
-sch-nopre:
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) $(PRELOADFLAG) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@rm -rf cmp $(TARGET)
-
-sch:
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@rm -rf cmp $(TARGET)
-
-vec:
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_ROUNDROBIN -DVECTORIZE
-	./$(TARGET) $(n) $(n) $(n) $(g)
-
-
-cmp-sch:
-	@echo Equal
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g)
-	@echo
-	@echo Uniform	
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) 1
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g) 1
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g) 1
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g) 1
-	@echo
-	@echo Random
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) $(g) 2
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) $(g) 2
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) $(g) 2
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) $(g) 2
-
-
 gran-test:
 	@$(BASE) -DSCHED_ROUNDROBIN
 	./$(TARGET) $(n) $(n) $(n) 0.0
@@ -265,34 +186,6 @@ gran-test:
 	./$(TARGET) $(n) $(n) $(n) 1.0
 
 	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) 0.0
-	./$(TARGET) $(n) $(n) $(n) 0.1
-	./$(TARGET) $(n) $(n) $(n) 0.6
-	./$(TARGET) $(n) $(n) $(n) 0.7
-	./$(TARGET) $(n) $(n) $(n) 0.8
-	./$(TARGET) $(n) $(n) $(n) 0.9
-	./$(TARGET) $(n) $(n) $(n) 0.95
-	./$(TARGET) $(n) $(n) $(n) 0.99
-	./$(TARGET) $(n) $(n) $(n) 0.995
-	./$(TARGET) $(n) $(n) $(n) 0.999
-	./$(TARGET) $(n) $(n) $(n) 0.9999
-	./$(TARGET) $(n) $(n) $(n) 1.0
-
-gran-7:
-	@$(BASE) -DSCHED_ROUNDROBIN
-	./$(TARGET) $(n) $(n) $(n) 0.7
-
-	@$(BASE) -DSCHED_RANDOM
-	./$(TARGET) $(n) $(n) $(n) 0.7
-
-	@$(BASE) -DSCHED_DYNAMIC2
-	./$(TARGET) $(n) $(n) $(n) 0.7
-
-	@$(BASE) -DSCHED_ADAPTIVE2
-	./$(TARGET) $(n) $(n) $(n) 0.7
-	
-dyn:
-	@$(BASE) -DSCHED_DYNAMIC2
 	./$(TARGET) $(n) $(n) $(n) 0.0
 	./$(TARGET) $(n) $(n) $(n) 0.1
 	./$(TARGET) $(n) $(n) $(n) 0.6
