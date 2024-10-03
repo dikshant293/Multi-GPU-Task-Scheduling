@@ -54,6 +54,7 @@ ifeq ($(API),mpi-cuda)
 endif
 
 TARGET=mpiexec -n ${TRANKS} -ppn ${RANKS_NODE} --cpu-bind=${CPU_AFFINITY} -d 1 ./${GPU_AFFINITY} ./${OBJ}
+TARGETNOAFF=mpiexec -n ${TRANKS} -ppn ${RANKS_NODE} ./${OBJ}
 
 all: clean
 	$(CMD)
@@ -62,6 +63,9 @@ all: clean
 n=20000
 test: clean all
 	$(TARGET) $(n) $(n) $(n)
+
+noaff: clean all
+	$(TARGETNOAFF) $(n) $(n) $(n)
 
 clean:
 	rm -rf $(OBJ) $(OBJ).cu

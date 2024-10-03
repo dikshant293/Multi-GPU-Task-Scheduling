@@ -557,6 +557,12 @@ int main(int argc, char **argv)
     #pragma omp parallel for schedule(static,1)
     for(int d=0;d<ndevs;d++){
         cudaSetDevice(d);
+        
+        cudaMemPool_t mempool;
+        cudaDeviceGetDefaultMemPool(&mempool, d);
+        uint64_t threshold = UINT64_MAX;
+        cudaMemPoolSetAttribute(mempool, cudaMemPoolAttrReleaseThreshold, &threshold);
+        
         for(int s=0;s<streams_per_gpu;s++)
             cudaStreamCreate(&streams[d][s]);
         cudaDeviceSynchronize();

@@ -108,6 +108,9 @@ n=20000
 g=0.999
 tpb=1024
 
+test: all
+	./$(TARGET) $(n) $(n) $(n) $(g)
+
 cmp:
 	@$(BASE) -DUSEOPENMP -DSCHED_ROUNDROBIN 							-DUSE1D
 	./$(TARGET) $(n) $(n) $(n) $(g)
