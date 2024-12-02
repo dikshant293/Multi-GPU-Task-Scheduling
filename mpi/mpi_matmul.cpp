@@ -1,4 +1,5 @@
 #include <mpi.h>
+#include <nccl.h>  // Include NCCL header
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
         for(int j = blockIdx.x * blockDim.x + threadIdx.x;j<N;j+=blockDim.x*gridDim.x)
             {
                 float sum = 0.0;
-                
+
                 #if defined(VECTORIZE)
                 auto a = reinterpret_cast<float4*>(&A[i * K]);
                 auto b = reinterpret_cast<float4*>(&B[j * K]);
@@ -57,7 +58,7 @@ __global__ void multiply_kernel(float *A, float *B, float *C, int M, int N, int 
                     a++;
                     b++;
                 }
-                
+
                 #else
                 for (int k = 0; k < K; ++k)
                     sum += A[i * K + k] * B[j * K + k];
@@ -158,7 +159,7 @@ inline void multiply(float *d_a, float *d_b, float *d_c, int M, int N, int K, in
             a++;
             b++;
         }
-        
+
         #else
         for (int kk = 0; kk < K; kk++){
             sum += d_a[ii * K + kk] * d_b[jj * K + kk];
@@ -179,10 +180,18 @@ void transposeMatrix(float* matrix, int m, int n) {
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
 
-    int world_size, world_rank;
+    int world_size, world_rank, local_rank;
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     int check_result = 0;
+
+    // Get local rank (needed for NCCL communicator)
+    const char* local_rank_env = std::getenv("OMPI_COMM_WORLD_LOCAL_RANK");
+    if (local_rank_env) {
+        local_rank = std::atoi(local_rank_env);
+    } else {
+        local_rank = world_rank;
+    }
 
     int M = PSIZE, N = PSIZE, K = PSIZE;
     if (argc <= 1)
@@ -204,21 +213,31 @@ int main(int argc, char **argv) {
     int a_size = M * K, b_size = K * N, c_size = M * N;
     // we spawn total rank number of tasks
     int numRowsPerRank = CEIL(M,world_size);
-    
-    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, world_size);;
+
+    std::vector<int> startIndexes = generateEqualChunkStartIndices(M, world_size);
     std::vector<int> chunkSizes = calculateChunkSizes(startIndexes, M);
 
-    checkMPIError(MPI_Barrier(MPI_COMM_WORLD));
-    
     // start and end indexes for the current rank
     int start = startIndexes[world_rank], end = (world_rank==world_size-1 ? M : startIndexes[world_rank+1]);
     int nRows = end-start;
     int a_start, b_start, c_start, a_items, b_items, c_items, m, n, k;
-    
+
     m=nRows; n=N; k=K;
     a_start = start*K; b_start = 0;   c_start = start*N;
     a_items = nRows*K; b_items = K*N; c_items = nRows*N;
-    MPI_Status stat;
+
+    // compute counts and displacements for MPI_Scatterv and MPI_Gatherv
+    int *sendcounts_a = new int[world_size];
+    int *displs_a = new int[world_size];
+    int *recvcounts_c = new int[world_size];
+    int *displs_c = new int[world_size];
+
+    for (int i = 0; i < world_size; i++) {
+        sendcounts_a[i] = chunkSizes[i] * K; // number of elements to send to process i
+        displs_a[i] = startIndexes[i] * K;   // displacement in send buffer
+        recvcounts_c[i] = chunkSizes[i] * N;
+        displs_c[i] = startIndexes[i] * N;
+    }
 
     // initialize the matrices on rank 0
     float *a,*b,*c;
@@ -245,12 +264,12 @@ int main(int argc, char **argv) {
             c[i] = 0.0;
 
         start_timer();
-        
+
         printf("bench_works [m=%d] [n=%d] [k=%d]\n",M, N, K);
         #if defined(VECTORIZE)
         printf("vectorized\n");
         #else
-        printf("non vectorized\n");   
+        printf("non vectorized\n");
         #endif
         #if defined(USEOPENMP)
         printf("using OPENMP target offload\n");
@@ -259,83 +278,101 @@ int main(int argc, char **argv) {
         #endif
     }
 
-    // transferring initialized data to other ranks as per requirement
+    // All processes allocate h_a, h_b, h_c
     float *h_a, *h_b, *h_c;
-    if(world_rank==0){
-        h_a = a+a_start;
-        h_b = b+b_start;
-        h_c = c+c_start;
-        for(int i=1;i<world_size;i++){
-            int send_start = startIndexes[i], send_end = (i==world_size-1 ? M : startIndexes[i+1]);
-            int send_nRows = send_end-send_start;
-            checkMPIError(MPI_Send(a+send_start*K   ,send_nRows*K   ,MPI_FLOAT,i,1,MPI_COMM_WORLD));
-            checkMPIError(MPI_Send(b+0              ,K*N            ,MPI_FLOAT,i,2,MPI_COMM_WORLD));
-            checkMPIError(MPI_Send(c+send_start*N   ,send_nRows*N   ,MPI_FLOAT,i,3,MPI_COMM_WORLD));
-        }
-        
-    }
-    else{
-        #if defined(USEOPENMP)
-        h_a = (float*)malloc(a_items*sizeof(float));
-        h_b = (float*)malloc(b_items*sizeof(float));
-        h_c = (float*)malloc(c_items*sizeof(float));
-        #else
-        checkCuda(cudaMallocHost(&h_a,a_items*sizeof(float)));
-        checkCuda(cudaMallocHost(&h_b,b_items*sizeof(float)));
-        checkCuda(cudaMallocHost(&h_c,c_items*sizeof(float)));
-        #endif
-
-        checkMPIError(MPI_Recv(h_a,a_items,MPI_FLOAT,0,1,MPI_COMM_WORLD,&stat));
-        checkMPIError(MPI_Recv(h_b,b_items,MPI_FLOAT,0,2,MPI_COMM_WORLD,&stat));
-        checkMPIError(MPI_Recv(h_c,c_items,MPI_FLOAT,0,3,MPI_COMM_WORLD,&stat));
-    }
-
-    transposeMatrix(h_b,K,N);    
 
     #if defined(USEOPENMP)
-    multiply(h_a,h_b,h_c,m,n,k,a_items,b_items,c_items);
-    #else // if MPI+CUDA
-    float *d_a,*d_b,*d_c;
-
-    cudaMalloc(&d_a,a_items*sizeof(float));
-    cudaMemcpy(d_a,h_a,a_items*sizeof(float),cudaMemcpyHostToDevice);
-    
-    cudaMalloc(&d_b,b_items*sizeof(float));
-    cudaMemcpy(d_b,h_b,b_items*sizeof(float),cudaMemcpyHostToDevice);
-    
-    cudaMalloc(&d_c,c_items*sizeof(float));
-    cudaMemcpy(d_c,h_c,c_items*sizeof(float),cudaMemcpyHostToDevice);
-
-    int blk_x = MIN(MAX_TPB,n), blk_y = MIN(MAX_TPB,m);
-    dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
-    dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit 
-
-    multiply_kernel<<<blocksPerGrid,threadsPerBlock>>>(d_a,d_b,d_c,m,n,k);
-    cudaMemcpy(h_c,d_c,c_items*sizeof(float),cudaMemcpyDeviceToHost);
-
-    cudaFree(d_a);
-    cudaFree(d_b);
-    cudaFree(d_c);
-
-    cudaDeviceSynchronize();
+    h_a = (float*)malloc(a_items*sizeof(float));
+    h_b = (float*)malloc(b_items*sizeof(float));
+    h_c = (float*)malloc(c_items*sizeof(float));
+    #else
+    checkCuda(cudaMallocHost(&h_a,a_items*sizeof(float)));
+    checkCuda(cudaMallocHost(&h_b,b_items*sizeof(float)));
+    checkCuda(cudaMallocHost(&h_c,c_items*sizeof(float)));
     #endif
 
-    transposeMatrix(h_b,N,K);
+    // Initialize NCCL
+    ncclUniqueId ncclId;
+    ncclComm_t ncclComm;
+    cudaStream_t stream;
 
-    // transferring computed data back to rank 0
-    if(world_rank==0){
-        h_a = a+a_start;
-        h_b = b+b_start;
-        h_c = c+c_start;
-        for(int i=1;i<world_size;i++){
-            int recv_start = startIndexes[i], recv_end = (i==world_size-1 ? M : startIndexes[i+1]);
-            int recv_nRows = recv_end-recv_start;
-            checkMPIError(MPI_Recv(c+recv_start*N, recv_nRows*N,MPI_FLOAT,i,4,MPI_COMM_WORLD,&stat));
-        }
+    if (world_rank == 0) {
+        ncclGetUniqueId(&ncclId);
     }
-    else{
-        checkMPIError(MPI_Send(h_c,c_items,MPI_FLOAT,0,4,MPI_COMM_WORLD));
+    checkMPIError(MPI_Bcast(&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD));
+    printf("local rank %d\n",local_rank);
+    // checkCuda(cudaSetDevice(local_rank));
+    checkCuda(cudaStreamCreate(&stream));
+    ncclResult_t ncclStatus = ncclCommInitRank(&ncclComm, world_size, ncclId, world_rank);
+    if (ncclStatus != ncclSuccess) {
+        printf("NCCL Error: %s\n", ncclGetErrorString(ncclStatus));
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
+
+    // Device pointers
+    float *d_a, *d_b, *d_c;
+
+    // Allocate device memory
+    checkCuda(cudaMalloc(&d_a, a_items * sizeof(float)));
+    checkCuda(cudaMalloc(&d_b, b_items * sizeof(float)));
+    checkCuda(cudaMalloc(&d_c, c_items * sizeof(float)));
+
+    // Copy b from root to all processes using NCCL_Bcast
+    if (world_rank == 0) {
+        // Copy b to device memory
+        checkCuda(cudaMemcpyAsync(d_b, b, b_items * sizeof(float), cudaMemcpyHostToDevice, stream));
+    }
+
+    // NCCL Broadcast for d_b
+    ncclBroadcast((const void*)d_b, (void*)d_b, b_items, ncclFloat, 0, ncclComm, stream);
+
+    // Copy a chunk of a to all processes using MPI_Scatterv
+    if (world_rank == 0) {
+        // Copy a to h_a
+        memcpy(h_a, a + a_start, a_items * sizeof(float));
+    }
+    // Scatter h_a to all processes
+    checkMPIError(MPI_Scatterv(a, sendcounts_a, displs_a, MPI_FLOAT, h_a, a_items, MPI_FLOAT, 0, MPI_COMM_WORLD));
+
+    // Copy h_a to device
+    checkCuda(cudaMemcpyAsync(d_a, h_a, a_items * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+    // Transpose d_b on device (Note: Implement device-side transpose)
+    // For simplicity, we can transpose h_b on host and copy it to device
+    if (world_rank == 0) {
+        checkCuda(cudaMemcpyAsync(h_b, d_b, b_items * sizeof(float), cudaMemcpyDeviceToHost, stream));
+        cudaStreamSynchronize(stream);
+        transposeMatrix(h_b, K, N);
+        checkCuda(cudaMemcpyAsync(d_b, h_b, b_items * sizeof(float), cudaMemcpyHostToDevice, stream));
+    }
+    // Synchronize NCCL Broadcast
+    cudaStreamSynchronize(stream);
+
+    // Synchronize all processes
+    checkMPIError(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Now perform the multiplication on device
+    #if defined(USEOPENMP)
+    // Not applicable since we're using CUDA
+    #else // if MPI+CUDA
+    int blk_x = MIN(MAX_TPB,n), blk_y = MIN(MAX_TPB,m);
+    dim3 blocksPerGrid(CEIL(n,blk_x), CEIL(m,blk_y));
+    dim3 threadsPerBlock(blk_x, blk_y); // Assuming width and height are within max threads per block limit
+
+    multiply_kernel<<<blocksPerGrid,threadsPerBlock, 0, stream>>>(d_a,d_b,d_c,m,n,k);
+    #endif
+
+    // Copy result back to host
+    checkCuda(cudaMemcpyAsync(h_c, d_c, c_items*sizeof(float), cudaMemcpyDeviceToHost, stream));
+
+    // Synchronize stream
+    cudaStreamSynchronize(stream);
+
+    // Transpose d_b back if needed (skip if not necessary)
+
+    // Use MPI_Gatherv to gather h_c to c on root process
+    checkMPIError(MPI_Gatherv(h_c, c_items, MPI_FLOAT, c, recvcounts_c, displs_c, MPI_FLOAT, 0, MPI_COMM_WORLD));
+
     // correctness check
     if(world_rank==0){
         end_timer("GPU Multiplication");
@@ -381,15 +418,27 @@ int main(int argc, char **argv) {
         cudaFreeHost(c);
         #endif
     }
-    else{
-        #if defined(USEOPENMP)
-        free(h_a);free(h_b);free(h_c);
-        #else
-        cudaFreeHost(h_a);
-        cudaFreeHost(h_b);
-        cudaFreeHost(h_c);
-        #endif
-    }
+
+    // Clean up
+    cudaFree(d_a);
+    cudaFree(d_b);
+    cudaFree(d_c);
+    cudaStreamDestroy(stream);
+    ncclCommDestroy(ncclComm);
+
+    #if defined(USEOPENMP)
+    free(h_a);free(h_b);free(h_c);
+    #else
+    cudaFreeHost(h_a);
+    cudaFreeHost(h_b);
+    cudaFreeHost(h_c);
+    #endif
+
+    // Free allocated arrays for counts and displacements
+    delete[] sendcounts_a;
+    delete[] displs_a;
+    delete[] recvcounts_c;
+    delete[] displs_c;
 
     MPI_Finalize();
     return 0;
