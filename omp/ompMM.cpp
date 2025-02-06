@@ -516,7 +516,10 @@ int main(int argc, char *argv[])
                 }
                 #endif
                 #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
+                #pragma omp critical
+		{
                 gpuLoad[d] -= NNsq;
+		}
                 // nextTask assignedTo the GPU just freed
                 int myTask;
                 #pragma omp atomic capture

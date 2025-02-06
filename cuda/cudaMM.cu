@@ -716,7 +716,10 @@ int main(int argc, char **argv)
             #if defined(SCHED_ADAPTIVE) || defined(SCHED_ADAPTIVE2)
             cudaStreamSynchronize(stream);
             success[i] = 1;
+            #pragma omp critical
+	    {
             gpuLoad[d] -= NNsq;
+	    }
             // nextTask assignedTo the GPU just freed                                                                                                                                                                      
             int myTask;
             #pragma omp atomic capture 
